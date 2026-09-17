@@ -130,7 +130,7 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen w-full flex flex-col text-white" style={rootStyle}>
+    <div className="h-screen w-full flex flex-col text-white overflow-hidden" style={rootStyle}>
       {/* network background */}
       <div className="fixed inset-0 vp-net-bg pointer-events-none opacity-60" aria-hidden="true" />
 
