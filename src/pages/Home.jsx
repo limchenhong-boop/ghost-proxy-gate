@@ -4,9 +4,12 @@ import { normalizeQuery } from "@/lib/proxy";
 import { THEMES, CLOAK_PRESETS, loadTheme, saveTheme, loadCloak, saveCloak, applyCloak } from "@/lib/settings";
 import VelocitySearch from "@/components/VelocitySearch";
 import ProxyFrame from "@/components/ProxyFrame";
-import TabCloakPanel from "@/components/TabCloakPanel";
-import ThemePanel from "@/components/ThemePanel";
-import { Eye, Palette, X } from "lucide-react";
+import CloakBar from "@/components/CloakBar";
+import NavBar from "@/components/NavBar";
+import QuickApps from "@/components/QuickApps";
+import AppFooter from "@/components/AppFooter";
+import SettingsPanel from "@/components/SettingsPanel";
+import { X } from "lucide-react";
 
 export default function Home() {
   const [view, setView] = useState("home");
@@ -128,35 +131,32 @@ export default function Home() {
 
   return (
     <div className="min-h-screen w-full flex flex-col text-white" style={rootStyle}>
-      {/* top brand bar */}
-      <header className="flex items-center justify-between px-4 sm:px-6 py-3">
-        <div />
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={() => setPanel(panel === "cloak" ? null : "cloak")}
-            className="vp-pill"
-            style={panel === "cloak" ? vpActive : vpIdle}
-          >
-            <Eye className="w-4 h-4" />
-            <span className="hidden sm:inline text-sm font-medium">Cloak</span>
-          </button>
-          <button
-            onClick={() => setPanel(panel === "theme" ? null : "theme")}
-            className="vp-pill"
-            style={panel === "theme" ? vpActive : vpIdle}
-          >
-            <Palette className="w-4 h-4" />
-            <span className="hidden sm:inline text-sm font-medium">Theme</span>
-          </button>
-        </div>
-      </header>
+      {/* network background */}
+      <div className="fixed inset-0 vp-net-bg pointer-events-none opacity-60" aria-hidden="true" />
 
-      <main className="flex-1 flex flex-col min-h-0">
+      {view === "home" && (
+        <>
+          <CloakBar />
+          <NavBar onHome={goHome} onNavigate={navigate} />
+        </>
+      )}
+
+      <main className="relative z-10 flex-1 flex flex-col min-h-0">
         {view === "home" ? (
-          <div className="flex-1 flex flex-col items-center justify-center gap-10 px-4 sm:px-6 py-10">
+          <div className="flex-1 flex flex-col items-center justify-center gap-8 px-4 sm:px-6 py-8 overflow-y-auto">
             <h1 className="ghost-word text-7xl sm:text-8xl vp-fade-up">ghost</h1>
             <div className="w-full max-w-xl vp-fade-up" style={{ animationDelay: "0.08s" }}>
               <VelocitySearch value={query} onChange={setQuery} onSubmit={() => navigate(query)} loading={loading} />
+              <p className="text-center text-white/40 text-xs mt-3">
+                Press{" "}
+                <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-white/60 text-[10px] font-mono mx-0.5">
+                  Ctrl+Y
+                </kbd>{" "}
+                to open command palette
+              </p>
+            </div>
+            <div className="w-full vp-fade-up" style={{ animationDelay: "0.16s" }}>
+              <QuickApps onOpen={navigate} />
             </div>
           </div>
         ) : (
@@ -193,11 +193,12 @@ export default function Home() {
                 <X className="w-4 h-4" />
               </button>
             </div>
-            {panel === "cloak" && <TabCloakPanel cloak={cloak} onApply={applyCloakPreset} />}
-            {panel === "theme" && <ThemePanel theme={theme} onApply={applyTheme} />}
+            <SettingsPanel cloak={cloak} theme={theme} onApplyCloak={applyCloakPreset} onApplyTheme={applyTheme} />
           </aside>
         </>
       )}
+
+      {view === "home" && <AppFooter onSettings={() => setPanel("settings")} />}
 
       {blurred && (
         <div

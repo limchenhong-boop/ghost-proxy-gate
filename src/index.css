@@ -137,6 +137,11 @@
   -webkit-backdrop-filter: blur(18px);
 }
 
+.vp-net-bg {
+  background-image: radial-gradient(rgba(255,255,255,0.07) 1px, transparent 1px);
+  background-size: 26px 26px;
+}
+
 /* ghost word */
 @keyframes vp-ghost-glow {
   0%, 100% { text-shadow: 0 0 18px rgba(255,255,255,0.35), 0 0 40px rgba(255,255,255,0.12); opacity: 0.88; }
