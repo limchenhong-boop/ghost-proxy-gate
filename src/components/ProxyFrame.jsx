@@ -70,7 +70,7 @@ export default function ProxyFrame({
       <div className="relative flex-1 bg-white">
         <iframe
           srcDoc={html}
-          sandbox="allow-scripts allow-forms allow-popups allow-modals"
+          sandbox="allow-scripts allow-forms allow-popups allow-modals allow-same-origin"
           className="w-full h-full block"
           title="Velocity Proxy"
           referrerPolicy="no-referrer"
