@@ -1,4 +1,5 @@
 export const THEMES = [
+  { id: "ghost", name: "Ghost Mono", bg: "#000000", bg2: "#0a0a0a", accent: "#ffffff", accent2: "#d4d4d4" },
   { id: "violet", name: "Midnight Violet", bg: "#0B0314", bg2: "#1f0a3d", accent: "#a855f7", accent2: "#ec4899" },
   { id: "ocean", name: "Deep Ocean", bg: "#020617", bg2: "#0c1f3d", accent: "#06b6d4", accent2: "#3b82f6" },
   { id: "abyss", name: "Pure Abyss", bg: "#000000", bg2: "#111111", accent: "#6366f1", accent2: "#8b5cf6" },

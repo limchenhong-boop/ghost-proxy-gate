@@ -6,7 +6,7 @@ import VelocitySearch from "@/components/VelocitySearch";
 import ProxyFrame from "@/components/ProxyFrame";
 import TabCloakPanel from "@/components/TabCloakPanel";
 import ThemePanel from "@/components/ThemePanel";
-import { Eye, Palette, X, Sparkles, Zap } from "lucide-react";
+import { Eye, Palette, X } from "lucide-react";
 
 export default function Home() {
   const [view, setView] = useState("home");
@@ -123,15 +123,7 @@ export default function Home() {
     <div className="min-h-screen w-full flex flex-col text-white" style={rootStyle}>
       {/* top brand bar */}
       <header className="flex items-center justify-between px-4 sm:px-6 py-3">
-        <button onClick={goHome} className="flex items-center gap-2 group">
-          <span
-            className="w-8 h-8 rounded-lg flex items-center justify-center"
-            style={{ background: "linear-gradient(135deg, var(--vp-accent), var(--vp-accent2))", boxShadow: "0 4px 16px -4px var(--vp-accent)" }}
-          >
-            <Zap className="w-4 h-4 text-white" fill="white" />
-          </span>
-          <span className="font-extrabold text-lg tracking-tight vp-gradient-text">Velocity</span>
-        </button>
+        <div />
         <div className="flex items-center gap-1.5">
           <button
             onClick={() => setPanel(panel === "cloak" ? null : "cloak")}
@@ -154,37 +146,10 @@ export default function Home() {
 
       <main className="flex-1 flex flex-col px-4 sm:px-6 pb-4 min-h-0">
         {view === "home" ? (
-          <div className="flex-1 flex flex-col items-center justify-center gap-8 py-10">
-            <div className="text-center space-y-3 max-w-2xl vp-fade-up">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium text-white/70" style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)" }}>
-                <Sparkles className="w-3.5 h-3.5" style={{ color: "var(--vp-accent)" }} />
-                Faster than Fern. Embeddable anywhere.
-              </div>
-              <h1 className="text-4xl sm:text-6xl font-black tracking-tight leading-[1.05]">
-                Browse <span className="vp-gradient-text">anything.</span>
-                <br />
-                Leave no trace.
-              </h1>
-              <p className="text-white/50 text-sm sm:text-base">
-                Type a URL or search — the site loads right here, wrapped in light.
-              </p>
-            </div>
-
+          <div className="flex-1 flex flex-col items-center justify-center gap-10 py-10">
+            <h1 className="ghost-word text-6xl sm:text-7xl vp-fade-up">ghost</h1>
             <div className="w-full max-w-xl vp-fade-up" style={{ animationDelay: "0.08s" }}>
               <VelocitySearch value={query} onChange={setQuery} onSubmit={() => navigate(query)} loading={loading} />
-            </div>
-
-            <div className="flex flex-wrap items-center justify-center gap-2 vp-fade-up" style={{ animationDelay: "0.16s" }}>
-              {["wikipedia.org", "reddit.com", "github.com", "duckduckgo.com"].map((s) => (
-                <button
-                  key={s}
-                  onClick={() => navigate(s)}
-                  className="px-3 py-1.5 rounded-full text-xs font-medium text-white/60 hover:text-white transition"
-                  style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
-                >
-                  {s}
-                </button>
-              ))}
             </div>
           </div>
         ) : (
