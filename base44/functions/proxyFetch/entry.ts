@@ -73,6 +73,9 @@ export default async function(req: Request): Promise<Response> {
       "access-control-expose-headers": "*",
       "referrer-policy": "no-referrer",
     };
+    const cr = resp.headers.get("content-range");
+    if (cr) baseHeaders["content-range"] = cr;
+    if (resp.headers.get("accept-ranges")) baseHeaders["accept-ranges"] = resp.headers.get("accept-ranges");
     if (isHtml) {
       let html = await resp.text();
       html = rewriteHtml(html, finalUrl, proxyBase);
@@ -83,7 +86,9 @@ export default async function(req: Request): Promise<Response> {
       const css = await resp.text();
       return new Response(rewriteCssUrls(css, finalUrl, proxyBase), { status: resp.status, headers: baseHeaders });
     }
-    return new Response(await resp.arrayBuffer(), { status: resp.status, headers: baseHeaders });
+    const buf = await resp.arrayBuffer();
+    baseHeaders["content-length"] = String(buf.byteLength);
+    return new Response(buf, { status: resp.status, headers: baseHeaders });
   } catch (error) {
     return Response.json({ error: error.message || "Proxy failed" }, { status: 500 });
   }
@@ -92,7 +97,7 @@ export default async function(req: Request): Promise<Response> {
 function inject(html: string, finalUrl: string, origin: string): string {
   const script =
     '<base href="' + finalUrl + '">' +
-    "<script>" + clientScript(origin) + "</script>";
+    "<script>" + clientScript(origin, finalUrl) + "</script>";
   if (/<head[^>]*>/i.test(html)) {
     return html.replace(/<head[^>]*>/i, (m) => m + script);
   }
@@ -102,15 +107,20 @@ function inject(html: string, finalUrl: string, origin: string): string {
   return script + html;
 }
 
-function clientScript(origin: string): string {
+function clientScript(origin: string, finalUrl: string): string {
+  let path = "/";
+  try { const u = new URL(finalUrl); path = u.pathname + u.search + u.hash; } catch {}
   return [
     "var PROXY_ORIGIN=" + JSON.stringify(origin) + ";",
     "var P=PROXY_ORIGIN+'/functions/proxyFetch?url=';",
+    "var VP_PATH=" + JSON.stringify(path) + ";",
     "function rp(u){if(!u)return u;if(typeof u!=='string')u=String(u);if(u.indexOf(P)===0)return u;if(/^(data:|blob:|javascript:|mailto:|tel:|#)/.test(u))return u;try{var abs=new URL(u,document.baseURI).href;return P+encodeURIComponent(abs)}catch(e){return u}}",
     "var of=window.fetch;if(of)window.fetch=function(input,init){try{if(typeof input==='string')input=rp(input);else if(input&&input.url)input=new Request(rp(input.url),input)}catch(e){}return of.call(this,input,init)};",
     "var X=window.XMLHttpRequest;if(X){var o=X.prototype.open;X.prototype.open=function(m,u){arguments[1]=rp(u);return o.apply(this,arguments)}}",
     "var sb=navigator.sendBeacon&&navigator.sendBeacon.bind(navigator);if(sb)navigator.sendBeacon=function(u,d){try{u=rp(u)}catch(e){}return sb(u,d)};",
     "function s(h){try{parent.postMessage({__vp:1,url:h},'*')}catch(e){}}",
+    "try{history.replaceState(null,'',VP_PATH)}catch(e){}",
+    "try{var OL=Location.prototype;['assign','replace'].forEach(function(m){OL[m]=function(u){try{var abs=new URL(u,document.baseURI).href;s(abs)}catch(e){s(u)}}});var hd=Object.getOwnPropertyDescriptor(OL,'href');if(hd&&hd.get&&hd.set){Object.defineProperty(OL,'href',{configurable:true,enumerable:true,get:function(){return hd.get.call(this)},set:function(u){try{var abs=new URL(u,document.baseURI).href;s(abs)}catch(e){s(u)}}})}}catch(e){}",
     "document.addEventListener('click',function(e){var t=e.target;var a=t&&t.closest&&t.closest('a[href]');if(!a)return;var h=a.getAttribute('href');if(!h||h.indexOf('javascript:')===0||h.charAt(0)==='#')return;e.preventDefault();try{var abs=new URL(h,document.baseURI).href;s(abs)}catch(err){s(h)}},true);",
     "document.addEventListener('submit',function(e){e.preventDefault()},true);",
   ].join("");
