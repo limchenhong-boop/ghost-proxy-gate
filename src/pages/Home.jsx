@@ -9,16 +9,18 @@ import SettingsPanel from "@/components/SettingsPanel";
 import TabCloakPanel from "@/components/TabCloakPanel";
 import ThemePanel from "@/components/ThemePanel";
 import { Eye, Palette, X } from "lucide-react";
+import { base44 } from "@/api/base44Client";
 
 export default function Home() {
   const [view, setView] = useState("home");
   const [query, setQuery] = useState("");
   const [currentUrl, setCurrentUrl] = useState("");
-  const [iframeSrc, setIframeSrc] = useState("");
-  const [navKey, setNavKey] = useState(0);
+  const [html, setHtml] = useState("");
+  const [openDirectUrl, setOpenDirectUrl] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const loadTimer = useRef(null);
+  const blankTimer = useRef(null);
   const [history, setHistory] = useState([]);
   const [histIndex, setHistIndex] = useState(-1);
   const histIndexRef = useRef(-1);
@@ -29,12 +31,6 @@ export default function Home() {
   useEffect(() => {
     histIndexRef.current = histIndex;
   }, [histIndex]);
-
-  useEffect(() => {
-    if (view === "browse" && currentUrl) {
-      setIframeSrc(`${window.location.origin}/functions/proxyFetch?url=${encodeURIComponent(currentUrl)}&_=${navKey}`);
-    }
-  }, [navKey]);
 
   useEffect(() => {
     applyCloak(cloak);
@@ -50,33 +46,81 @@ export default function Home() {
   const startLoad = useCallback(() => {
     setLoading(true);
     setError(null);
+    setOpenDirectUrl(null);
     if (loadTimer.current) clearTimeout(loadTimer.current);
-    loadTimer.current = setTimeout(() => setError("This site is taking too long or blocked the proxy."), 20000);
+    loadTimer.current = setTimeout(() => {
+      setLoading(false);
+      setError("This site is taking too long or blocked the proxy.");
+    }, 20000);
   }, []);
 
   const onLoaded = useCallback(() => {
     setLoading(false);
-    setError(null);
     if (loadTimer.current) clearTimeout(loadTimer.current);
+    // After the document settles, inspect for a blank/anti-bot page and fall
+    // back to open-direct. srcDoc with allow-same-origin is same-origin with
+    // the parent, so contentDocument is readable here.
+    if (blankTimer.current) clearTimeout(blankTimer.current);
+    blankTimer.current = setTimeout(() => {
+      try {
+        const f = document.querySelector("iframe[title='Ghost Proxy']");
+        const doc = f && f.contentDocument;
+        if (doc && doc.body) {
+          const text = (doc.body.innerText || "").trim();
+          if (
+            text.length < 10 ||
+            (text.length < 200 &&
+              /page not available|not available|access denied|captcha|verify you are a human|are you a robot|blocked/i.test(text))
+          ) {
+            setOpenDirectUrl(currentUrl || "");
+          }
+        }
+      } catch (e) {
+        /* opaque document — can't inspect, leave as-is */
+      }
+    }, 4000);
+  }, [currentUrl]);
+
+  const pushHistory = useCallback((url) => {
+    setHistory((prev) => {
+      const trimmed = prev.slice(0, histIndexRef.current + 1);
+      const next = [...trimmed, url];
+      histIndexRef.current = next.length - 1;
+      setHistIndex(next.length - 1);
+      return next;
+    });
   }, []);
 
-  const navigate = useCallback((rawUrl, mode = "new") => {
+  const navigate = useCallback(async (rawUrl, mode = "new") => {
     const url = normalizeQuery(rawUrl);
     if (!url) return;
     startLoad();
-    setIframeSrc(`${window.location.origin}/functions/proxyFetch?url=${encodeURIComponent(url)}`);
-    setCurrentUrl(url);
-    setView("browse");
-    if (mode === "new") {
-      setHistory((prev) => {
-        const trimmed = prev.slice(0, histIndexRef.current + 1);
-        const next = [...trimmed, url];
-        histIndexRef.current = next.length - 1;
-        setHistIndex(next.length - 1);
-        return next;
-      });
+    try {
+      const res = await base44.functions.invoke("proxyFetch", { url, origin: window.location.origin });
+      const data = (res && res.data) || {};
+      if (data.error) throw new Error(data.error);
+      if (data.blocked || data.nonHtml) {
+        setOpenDirectUrl(data.finalUrl || url);
+        setHtml("");
+        setCurrentUrl(data.finalUrl || url);
+        setView("browse");
+        if (mode === "new") pushHistory(data.finalUrl || url);
+        return;
+      }
+      if (!data.html) throw new Error("Empty response from proxy");
+      setHtml(data.html);
+      setCurrentUrl(data.finalUrl || url);
+      setView("browse");
+      if (mode === "new") pushHistory(data.finalUrl || url);
+    } catch (e) {
+      setError(e.message || "Failed to load site");
+      setOpenDirectUrl(url);
+      setCurrentUrl(url);
+      setView("browse");
+    } finally {
+      setLoading(false);
     }
-  }, [startLoad]);
+  }, [startLoad, pushHistory]);
 
   useEffect(() => {
     function onMsg(e) {
@@ -104,19 +148,22 @@ export default function Home() {
   };
   const goHome = () => {
     setView("home");
-    setIframeSrc("");
+    setHtml("");
+    setOpenDirectUrl(null);
     setCurrentUrl("");
     setQuery("");
     setError(null);
+    setLoading(false);
     if (loadTimer.current) clearTimeout(loadTimer.current);
+    if (blankTimer.current) clearTimeout(blankTimer.current);
   };
   const reload = () => {
     if (!currentUrl) return;
-    startLoad();
-    setNavKey((k) => k + 1);
+    navigate(currentUrl, "reload");
   };
   const openExternal = () => {
-    if (currentUrl) window.open(currentUrl, "_blank", "noopener");
+    const u = openDirectUrl || currentUrl;
+    if (u) window.open(u, "_blank", "noopener");
   };
 
   const applyTheme = (t) => {
@@ -185,7 +232,8 @@ export default function Home() {
           <div className="fixed inset-0 z-10 flex flex-col">
             <ProxyFrame
               currentUrl={currentUrl}
-              iframeSrc={iframeSrc}
+              html={html}
+              openDirectUrl={openDirectUrl}
               loading={loading}
               error={error}
               histIndex={histIndex}

@@ -1,5 +1,5 @@
-import React from "react";
-import { Pencil } from "lucide-react";
+import React, { useState } from "react";
+import { Pencil, Loader2 } from "lucide-react";
 
 const APPS = [
   { name: "YouTube", url: "https://youtube.com", domain: "youtube.com" },
@@ -17,6 +17,20 @@ const APPS = [
 ];
 
 export default function QuickApps({ onOpen }) {
+  const [loadingApp, setLoadingApp] = useState(null);
+
+  const handleClick = async (app) => {
+    if (loadingApp) return;
+    setLoadingApp(app.name);
+    const guard = setTimeout(() => setLoadingApp(null), 8000);
+    try {
+      await onOpen(app.url);
+    } finally {
+      clearTimeout(guard);
+      setLoadingApp(null);
+    }
+  };
+
   return (
     <div className="w-full max-w-3xl mx-auto">
       <div className="flex items-center justify-between mb-3 px-1">
@@ -26,24 +40,32 @@ export default function QuickApps({ onOpen }) {
         </button>
       </div>
       <div className="grid grid-cols-4 gap-3 sm:gap-4">
-        {APPS.map((app) => (
-          <button
-            key={app.name}
-            onClick={() => onOpen(app.url)}
-            className="group flex flex-col items-center gap-2 p-3 rounded-xl bg-white/[0.03] hover:bg-white/[0.07] border border-white/5 hover:border-white/10 transition"
-          >
-            <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-xl bg-white/5 flex items-center justify-center overflow-hidden group-hover:scale-105 transition">
-              <img
-                src={`https://www.google.com/s2/favicons?sz=64&domain_url=https://${app.domain}`}
-                alt=""
-                className="w-7 h-7"
-              />
-            </div>
-            <span className="text-white/60 group-hover:text-white text-xs text-center truncate w-full">
-              {app.name}
-            </span>
-          </button>
-        ))}
+        {APPS.map((app) => {
+          const isLoading = loadingApp === app.name;
+          return (
+            <button
+              key={app.name}
+              onClick={() => handleClick(app)}
+              disabled={!!loadingApp}
+              className="group flex flex-col items-center gap-2 p-3 rounded-xl bg-white/[0.03] hover:bg-white/[0.07] border border-white/5 hover:border-white/10 transition disabled:opacity-60"
+            >
+              <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-xl bg-white/5 flex items-center justify-center overflow-hidden group-hover:scale-105 transition">
+                {isLoading ? (
+                  <Loader2 className="w-6 h-6 animate-spin" style={{ color: "var(--vp-accent)" }} />
+                ) : (
+                  <img
+                    src={`https://www.google.com/s2/favicons?sz=64&domain_url=https://${app.domain}`}
+                    alt=""
+                    className="w-7 h-7"
+                  />
+                )}
+              </div>
+              <span className="text-white/60 group-hover:text-white text-xs text-center truncate w-full">
+                {app.name}
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );

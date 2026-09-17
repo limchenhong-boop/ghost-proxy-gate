@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from "react";
-import { ArrowLeft, ArrowRight, RotateCw, Home, ExternalLink, AlertTriangle, Loader2, Lock } from "lucide-react";
+import { ArrowLeft, ArrowRight, RotateCw, Home, ExternalLink, AlertTriangle, Loader2, Lock, Globe } from "lucide-react";
 import { prettyUrl } from "@/lib/proxy";
 
 export default function ProxyFrame({
   currentUrl,
-  iframeSrc,
+  html,
+  openDirectUrl,
   loading,
   error,
   histIndex,
@@ -70,20 +71,37 @@ export default function ProxyFrame({
       {/* viewport */}
       <div className="relative flex-1 bg-white">
         <iframe
-          src={iframeSrc}
+          srcDoc={html}
           sandbox="allow-scripts allow-forms allow-popups allow-modals allow-same-origin"
           className="w-full h-full block"
-          title="Velocity Proxy"
+          title="Ghost Proxy"
           referrerPolicy="no-referrer"
           onLoad={onLoaded}
         />
         {loading && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3" style={{ background: "color-mix(in srgb, var(--vp-bg) 70%, transparent)" }}>
             <Loader2 className="w-8 h-8 animate-spin" style={{ color: "var(--vp-accent)" }} />
-            <span className="text-white/70 text-sm font-medium">Tunneling through Velocity…</span>
+            <span className="text-white/70 text-sm font-medium">Tunneling through Ghost…</span>
           </div>
         )}
-        {error && !loading && (
+        {openDirectUrl && !loading && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center" style={{ background: "color-mix(in srgb, var(--vp-bg) 88%, black)" }}>
+            <Globe className="w-10 h-10" style={{ color: "var(--vp-accent)" }} />
+            <p className="text-white font-semibold">This site can't be proxied</p>
+            <p className="text-white/60 text-sm max-w-md break-all">{openDirectUrl}</p>
+            <p className="text-white/40 text-xs max-w-md">
+              Some sites block proxies, require login, or detect automation. Open it directly in a new tab.
+            </p>
+            <button
+              onClick={onOpenExternal}
+              className="mt-2 px-4 py-2 rounded-full text-sm font-semibold text-white inline-flex items-center gap-2"
+              style={{ background: "linear-gradient(135deg, var(--vp-accent), var(--vp-accent2))" }}
+            >
+              <ExternalLink className="w-4 h-4" /> Open directly
+            </button>
+          </div>
+        )}
+        {error && !loading && !openDirectUrl && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center" style={{ background: "color-mix(in srgb, var(--vp-bg) 88%, black)" }}>
             <AlertTriangle className="w-10 h-10" style={{ color: "var(--vp-accent2)" }} />
             <p className="text-white font-semibold">Couldn't load this site</p>
