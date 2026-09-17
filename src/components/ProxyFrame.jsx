@@ -4,7 +4,7 @@ import { prettyUrl } from "@/lib/proxy";
 
 export default function ProxyFrame({
   currentUrl,
-  html,
+  iframeSrc,
   loading,
   error,
   histIndex,
@@ -15,6 +15,7 @@ export default function ProxyFrame({
   onHome,
   onNavigate,
   onOpenExternal,
+  onLoaded,
 }) {
   const [urlInput, setUrlInput] = useState(currentUrl);
 
@@ -69,11 +70,12 @@ export default function ProxyFrame({
       {/* viewport */}
       <div className="relative flex-1 bg-white">
         <iframe
-          srcDoc={html}
+          src={iframeSrc}
           sandbox="allow-scripts allow-forms allow-popups allow-modals allow-same-origin"
           className="w-full h-full block"
           title="Velocity Proxy"
           referrerPolicy="no-referrer"
+          onLoad={onLoaded}
         />
         {loading && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3" style={{ background: "color-mix(in srgb, var(--vp-bg) 70%, transparent)" }}>

@@ -1,16 +1,8 @@
 export default async function(req: Request): Promise<Response> {
   try {
     const reqUrl = new URL(req.url);
-    const urlParam = reqUrl.searchParams.get("url");
-    let target = urlParam || "";
-    let fromSdk = false;
-    let clientOrigin = reqUrl.origin;
-    if (!target) {
-      const body = await req.json().catch(() => ({}));
-      target = body.url || body.target || "";
-      fromSdk = true;
-      if (body.origin && /^https?:\/\//i.test(body.origin)) clientOrigin = body.origin.replace(/\/$/, "");
-    }
+    let target = reqUrl.searchParams.get("url") || "";
+    const proxyOrigin = reqUrl.origin;
     if (!target || typeof target !== "string") {
       return Response.json({ error: "Missing url" }, { status: 400 });
     }
@@ -24,26 +16,23 @@ export default async function(req: Request): Promise<Response> {
 
     const ua =
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-    const method = fromSdk ? "GET" : req.method || "GET";
-    const headers: Record<string, string> = {};
-    if (fromSdk) {
-      Object.assign(headers, {
-        "user-agent": ua,
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.8",
-        "accept-language": "en-US,en;q=0.9",
-        "accept-encoding": "gzip, deflate, br",
-        "cache-control": "max-age=0",
-        "upgrade-insecure-requests": "1",
-        "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
-        "sec-fetch-dest": "document",
-        "sec-fetch-mode": "navigate",
-        "sec-fetch-site": "none",
-        "sec-fetch-user": "?1",
-        referer: parsed.origin + "/",
-      });
-    } else {
+    const method = req.method || "GET";
+    const headers: Record<string, string> = {
+      "user-agent": ua,
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "accept-language": "en-US,en;q=0.9",
+      "cache-control": "max-age=0",
+      "upgrade-insecure-requests": "1",
+      "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+      "sec-ch-ua-mobile": "?0",
+      "sec-ch-ua-platform": '"Windows"',
+      "sec-fetch-dest": "document",
+      "sec-fetch-mode": "navigate",
+      "sec-fetch-site": "none",
+      "sec-fetch-user": "?1",
+      referer: parsed.origin + "/",
+    };
+    if (method !== "GET") {
       const skip = new Set([
         "host", "connection", "content-length", "accept-encoding", "transfer-encoding", "upgrade",
         "origin", "referer", "cookie", "authorization",
@@ -53,11 +42,10 @@ export default async function(req: Request): Promise<Response> {
         if (skip.has(lk) || lk.startsWith("x-") || lk.startsWith("cf-") || lk.startsWith("cdn-") || lk === "via" || lk === "true-client-ip") continue;
         headers[lk] = v;
       }
-      headers["referer"] = parsed.origin + "/";
     }
     const fetchOpts: any = { method, headers, redirect: "follow" };
     if (!["GET", "HEAD"].includes(method)) {
-      fetchOpts.body = fromSdk ? undefined : await req.arrayBuffer();
+      fetchOpts.body = await req.arrayBuffer();
     }
 
     const resp = await fetch(parsed.href, fetchOpts);
@@ -65,17 +53,23 @@ export default async function(req: Request): Promise<Response> {
     const finalUrl = resp.url || parsed.href;
     const isHtml = contentType.includes("text/html") || contentType.includes("application/xhtml");
 
-    if (fromSdk) {
-      if (!isHtml) {
-        return Response.json({ ok: true, html: null, finalUrl, contentType, nonHtml: true });
-      }
+    if (isHtml) {
       let html = await resp.text();
-      html = inject(html, finalUrl, clientOrigin);
-      return Response.json({ ok: true, html, finalUrl, contentType });
+      html = inject(html, finalUrl, proxyOrigin);
+      return new Response(html, {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "access-control-allow-origin": proxyOrigin,
+          "access-control-allow-credentials": "true",
+          "referrer-policy": "no-referrer",
+          "cache-control": "no-store",
+        },
+      });
     }
 
-    // direct browser request (runtime API call); stream through with permissive CORS
-    const baseHeaders = {
+    // non-HTML: stream through with permissive CORS + long cache for static assets
+    const baseHeaders: Record<string, string> = {
       "content-type": contentType || "application/octet-stream",
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "*",
@@ -125,7 +119,3 @@ function clientScript(origin: string, finalUrl: string): string {
     "document.addEventListener('submit',function(e){e.preventDefault()},true);",
   ].join("");
 }
-
-// Asset URLs are intentionally left untouched: the <base> tag (injected in inject())
-// makes relative URLs resolve to the real origin, so the browser loads JS/CSS/images
-// directly from the site's own CDN — fast, reliable, and CSP-safe (no app CSP is set).

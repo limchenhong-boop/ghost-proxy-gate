@@ -9,7 +9,7 @@ const APPS = [
   { name: "Google", url: "https://google.com", domain: "google.com" },
   { name: "Twitter/X", url: "https://twitter.com", domain: "twitter.com" },
   { name: "GeForce Now", url: "https://geforcenow.com", domain: "geforcenow.com" },
-  { name: "Movies", url: "https://youtube.com/movies", domain: "youtube.com" },
+  { name: "Netflix", url: "https://netflix.com", domain: "netflix.com" },
   { name: "Games", url: "https://poki.com", domain: "poki.com" },
   { name: "AI", url: "https://chatgpt.com", domain: "chatgpt.com" },
   { name: "Music", url: "https://music.youtube.com", domain: "music.youtube.com" },

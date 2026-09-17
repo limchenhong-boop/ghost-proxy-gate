@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { base44 } from "@/api/base44Client";
 import { normalizeQuery } from "@/lib/proxy";
 import { THEMES, CLOAK_PRESETS, loadTheme, saveTheme, loadCloak, saveCloak, applyCloak } from "@/lib/settings";
 import VelocitySearch from "@/components/VelocitySearch";
@@ -15,9 +14,11 @@ export default function Home() {
   const [view, setView] = useState("home");
   const [query, setQuery] = useState("");
   const [currentUrl, setCurrentUrl] = useState("");
-  const [html, setHtml] = useState("");
+  const [iframeSrc, setIframeSrc] = useState("");
+  const [navKey, setNavKey] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const loadTimer = useRef(null);
   const [history, setHistory] = useState([]);
   const [histIndex, setHistIndex] = useState(-1);
   const histIndexRef = useRef(-1);
@@ -30,6 +31,12 @@ export default function Home() {
   }, [histIndex]);
 
   useEffect(() => {
+    if (view === "browse" && currentUrl) {
+      setIframeSrc(`${window.location.origin}/functions/proxyFetch?url=${encodeURIComponent(currentUrl)}&_=${navKey}`);
+    }
+  }, [navKey]);
+
+  useEffect(() => {
     applyCloak(cloak);
   }, [cloak]);
 
@@ -40,39 +47,36 @@ export default function Home() {
     return () => document.removeEventListener("visibilitychange", onVis);
   }, []);
 
-  const navigate = useCallback(async (rawUrl, mode = "new") => {
-    const url = normalizeQuery(rawUrl);
-    if (!url) return;
+  const startLoad = useCallback(() => {
     setLoading(true);
     setError(null);
-    try {
-      const res = await base44.functions.invoke("proxyFetch", { url, origin: window.location.origin });
-      const data = res.data;
-      if (data.error) throw new Error(data.error);
-      if (data.nonHtml || !data.html) {
-        window.open(data.finalUrl || url, "_blank", "noopener");
-        setLoading(false);
-        return;
-      }
-      setHtml(data.html);
-      setCurrentUrl(data.finalUrl || url);
-      setView("browse");
-      if (mode === "new") {
-        const finalUrl = data.finalUrl || url;
-        setHistory((prev) => {
-          const trimmed = prev.slice(0, histIndexRef.current + 1);
-          const next = [...trimmed, finalUrl];
-          histIndexRef.current = next.length - 1;
-          setHistIndex(next.length - 1);
-          return next;
-        });
-      }
-    } catch (e) {
-      setError(e.message || "Failed to load site");
-    } finally {
-      setLoading(false);
-    }
+    if (loadTimer.current) clearTimeout(loadTimer.current);
+    loadTimer.current = setTimeout(() => setError("This site is taking too long or blocked the proxy."), 20000);
   }, []);
+
+  const onLoaded = useCallback(() => {
+    setLoading(false);
+    setError(null);
+    if (loadTimer.current) clearTimeout(loadTimer.current);
+  }, []);
+
+  const navigate = useCallback((rawUrl, mode = "new") => {
+    const url = normalizeQuery(rawUrl);
+    if (!url) return;
+    startLoad();
+    setIframeSrc(`${window.location.origin}/functions/proxyFetch?url=${encodeURIComponent(url)}`);
+    setCurrentUrl(url);
+    setView("browse");
+    if (mode === "new") {
+      setHistory((prev) => {
+        const trimmed = prev.slice(0, histIndexRef.current + 1);
+        const next = [...trimmed, url];
+        histIndexRef.current = next.length - 1;
+        setHistIndex(next.length - 1);
+        return next;
+      });
+    }
+  }, [startLoad]);
 
   useEffect(() => {
     function onMsg(e) {
@@ -100,13 +104,16 @@ export default function Home() {
   };
   const goHome = () => {
     setView("home");
-    setHtml("");
+    setIframeSrc("");
     setCurrentUrl("");
     setQuery("");
     setError(null);
+    if (loadTimer.current) clearTimeout(loadTimer.current);
   };
   const reload = () => {
-    if (currentUrl) navigate(currentUrl, "reload");
+    if (!currentUrl) return;
+    startLoad();
+    setNavKey((k) => k + 1);
   };
   const openExternal = () => {
     if (currentUrl) window.open(currentUrl, "_blank", "noopener");
@@ -178,7 +185,7 @@ export default function Home() {
           <div className="fixed inset-0 z-10 flex flex-col">
             <ProxyFrame
               currentUrl={currentUrl}
-              html={html}
+              iframeSrc={iframeSrc}
               loading={loading}
               error={error}
               histIndex={histIndex}
@@ -189,6 +196,7 @@ export default function Home() {
               onHome={goHome}
               onNavigate={(u) => navigate(u)}
               onOpenExternal={openExternal}
+              onLoaded={onLoaded}
             />
           </div>
         )}
