@@ -6,8 +6,10 @@ export function normalizeQuery(input) {
   if (!/\s/.test(s) && /^[\w-]+(\.[\w-]+)+([/:?#].*)?$/i.test(s)) {
     return "https://" + s;
   }
-  // otherwise treat as a search query
-  return "https://duckduckgo.com/?q=" + encodeURIComponent(s);
+  // otherwise treat as a search query — use DuckDuckGo's lite HTML endpoint,
+  // which is pure HTML (no JS) and renders reliably through the proxy so the
+  // results are actually visible.
+  return "https://html.duckduckgo.com/html/?q=" + encodeURIComponent(s);
 }
 
 export function prettyUrl(url) {

@@ -229,8 +229,44 @@ function makeProxy(origin: string, base: string) {
   };
 }
 
+// Static asset extensions and known CDN hosts. These are loaded DIRECTLY by
+// the browser (not tunneled through Base44) — the single biggest speed win,
+// because YouTube/TikTok/etc. pull most of their bytes (video chunks,
+// thumbnails, player JS, fonts) from CDNs that serve any origin. Same-origin
+// resources (host == page host) are still proxied, since those may need the
+// proxy to reach the real site.
+const STATIC_EXT = /\.(js|mjs|css|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|eot|otf|mp4|webm|m3u8|m4s|ts|mp3|wav|ogg|pdf)(?:[?#]|$)/i;
+const CDN_HOSTS = /(googleapis|gstatic|googlevideo|ytimg|ggpht|tiktokcdn|akamaized|akamaihd|cloudfront|fastly|jsdelivr|unpkg|cdnjs|fbcdn|edgecast|llnwd|cdn\.|\.cdn)/i;
+
+function isDirectResource(u: string, base: string): boolean {
+  try {
+    const x = new URL(u, base);
+    const pageHost = new URL(base).host;
+    if (x.host === pageHost) return false; // same-origin -> still proxy
+    return STATIC_EXT.test(x.pathname) || CDN_HOSTS.test(x.host);
+  } catch { return false; }
+}
+
+// Resource URL builder: direct absolute URL for static/CDN third-party assets,
+// proxied URL otherwise. Used for <img>/<script>/<link>/<source>/<media> src
+// and CSS url()/@import.
+function makeResProxy(origin: string, base: string) {
+  const proxy = makeProxy(origin, base);
+  return (u: string) => {
+    if (!u) return u;
+    const s = String(u).trim();
+    if (!s) return u;
+    if (/^(data:|blob:|javascript:|mailto:|tel:|#)/i.test(s)) return u;
+    if (isDirectResource(s, base)) {
+      try { return new URL(s, base).href; } catch { return u; }
+    }
+    return proxy(s);
+  };
+}
+
 function rewriteHtml(html: string, finalUrl: string, origin: string): string {
-  const proxy = makeProxy(origin, finalUrl);
+  const resProxy = makeResProxy(origin, finalUrl);
+  const navProxy = makeProxy(origin, finalUrl);
   // Strip upstream CSP meta tags — they could block the proxied document's
   // scripts (which are now same-origin with the srcDoc via the proxy).
   html = html.replace(/<meta\b[^>]*?http-equiv\s*=\s*["']?Content-Security-Policy[^>]*?>/gi, "");
@@ -238,14 +274,14 @@ function rewriteHtml(html: string, finalUrl: string, origin: string): string {
   const re = /(<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>)/gi;
   let out = "", last = 0, m: RegExpExecArray | null;
   while ((m = re.exec(html))) {
-    out += rewriteAttrs(html.slice(last, m.index), proxy) + m[0];
+    out += rewriteAttrs(html.slice(last, m.index), resProxy, navProxy) + m[0];
     last = m.index + m[0].length;
   }
-  out += rewriteAttrs(html.slice(last), proxy);
+  out += rewriteAttrs(html.slice(last), resProxy, navProxy);
   return out;
 }
 
-function rewriteAttrs(chunk: string, proxy: (u: string) => string): string {
+function rewriteAttrs(chunk: string, res: (u: string) => string, nav: (u: string) => string): string {
   // Remove SRI integrity attributes — proxied CSS is rewritten, so hashes would
   // mismatch and block the resource. (Proxied JS is byte-identical, but removing
   // integrity uniformly is simpler and safe.)
@@ -260,7 +296,7 @@ function rewriteAttrs(chunk: string, proxy: (u: string) => string): string {
       const sp = t.indexOf(" ");
       const u = sp === -1 ? t : t.slice(0, sp);
       const d = sp === -1 ? "" : t.slice(sp);
-      return proxy(u) + d;
+      return res(u) + d;
     }).join(", ");
     return attr + "=" + q.charAt(0) + list + q.charAt(0);
   });
@@ -268,19 +304,19 @@ function rewriteAttrs(chunk: string, proxy: (u: string) => string): string {
   // <link href> (resources — stylesheets, preloads, icons). NOT <a href>.
   chunk = chunk.replace(/(<link\b[^>]*?\shref\s*=\s*)("([^"]*)"|'([^']*)')/gi, (full, pre, q, dq, sq) => {
     const v = dq !== undefined ? dq : sq;
-    return pre + q.charAt(0) + proxy(v) + q.charAt(0);
+    return pre + q.charAt(0) + res(v) + q.charAt(0);
   });
 
   // src / data / poster / manifest / background (resources, not navigation)
   chunk = chunk.replace(/(\s(?:src|data|poster|manifest|background)\s*=\s*)("([^"]*)"|'([^']*)')/gi, (full, pre, q, dq, sq) => {
     const v = dq !== undefined ? dq : sq;
-    return pre + q.charAt(0) + proxy(v) + q.charAt(0);
+    return pre + q.charAt(0) + res(v) + q.charAt(0);
   });
 
-  // <meta http-equiv="refresh" content="3; url=..."> -> rewrite the url
+  // <meta http-equiv="refresh" content="3; url=..."> -> rewrite the url (navigation)
   chunk = chunk.replace(/(<meta\b[^>]*?http-equiv\s*=\s*["']?refresh["']?[^>]*?content\s*=\s*)("([^"]*)"|'([^']*)')/gi, (full, pre, q, dq, sq) => {
     const v = dq !== undefined ? dq : sq;
-    const rewritten = v.replace(/^(\s*\d+\s*;\s*url\s*=\s*)(.*)$/i, (_mm: string, pfx: string, u: string) => pfx + proxy(u));
+    const rewritten = v.replace(/^(\s*\d+\s*;\s*url\s*=\s*)(.*)$/i, (_mm: string, pfx: string, u: string) => pfx + nav(u));
     return pre + q.charAt(0) + rewritten + q.charAt(0);
   });
 
@@ -288,17 +324,17 @@ function rewriteAttrs(chunk: string, proxy: (u: string) => string): string {
 }
 
 function rewriteCss(css: string, cssUrl: string, origin: string): string {
-  const proxy = makeProxy(origin, cssUrl);
+  const res = makeResProxy(origin, cssUrl);
   return css
     // url(...)
     .replace(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\s*\)/gi, (m, dq, sq, bare) => {
       const u = dq !== undefined ? dq : sq !== undefined ? sq : bare;
-      return "url(" + proxy(u) + ")";
+      return "url(" + res(u) + ")";
     })
     // @import "..." / @import '...' (the @import url(...) form is handled above)
     .replace(/@import\s+("([^"]*)"|'([^']*)')/gi, (m, dq, sq) => {
       const u = dq !== undefined ? dq : sq;
-      const p = proxy(u).replace(/"/g, "");
+      const p = res(u).replace(/"/g, "");
       return '@import "' + p + '"';
     });
 }
@@ -322,8 +358,12 @@ var of=window.fetch;if(of)window.fetch=function(input,init){try{if(typeof input=
 var X=window.XMLHttpRequest;if(X){var ox=X.prototype.open;X.prototype.open=function(m,u){try{arguments[1]=rp(u)}catch(e){}return ox.apply(this,arguments)}}
 var sb=navigator.sendBeacon&&navigator.sendBeacon.bind(navigator);if(sb)navigator.sendBeacon=function(u,d){try{u=rp(u)}catch(e){}return sb(u,d)};
 var OE=window.EventSource;if(OE)window.EventSource=function(u,c){try{u=rp(u)}catch(e){}return new OE(u,c)};
-function hookEl(cn,prop){var c=window[cn];if(!c||!c.prototype)return;var d=Object.getOwnPropertyDescriptor(c.prototype,prop);if(d&&d.set){var os=d.set;Object.defineProperty(c.prototype,prop,{configurable:true,enumerable:d.enumerable||true,get:d.get,set:function(v){try{v=rp(v)}catch(e){}return os.call(this,v)}})}}
-hookEl('HTMLImageElement','src');hookEl('HTMLScriptElement','src');hookEl('HTMLLinkElement','href');hookEl('HTMLSourceElement','src');hookEl('HTMLIFrameElement','src');hookEl('HTMLMediaElement','src');
+var STATIC_EXT=/\.(js|mjs|css|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|eot|otf|mp4|webm|m3u8|m4s|ts|mp3|wav|ogg|pdf)(?:[?#]|$)/i;
+var CDN_HOSTS=/(googleapis|gstatic|googlevideo|ytimg|ggpht|tiktokcdn|akamaized|akamaihd|cloudfront|fastly|jsdelivr|unpkg|cdnjs|fbcdn|edgecast|cdn\.|\.cdn)/i;
+function isStatic(u){try{var x=new URL(u,document.baseURI);var ph=new URL(document.baseURI).host;if(x.host===ph)return false;return STATIC_EXT.test(x.pathname)||CDN_HOSTS.test(x.host)}catch(e){return false}}
+function rr(u){if(!u)return u;if(typeof u!=='string')u=String(u);if(/^(data:|blob:|javascript:|mailto:|tel:|#)/.test(u))return u;if(isStatic(u))return u;return rp(u)}
+function hookEl(cn,prop,fn){var c=window[cn];if(!c||!c.prototype)return;var d=Object.getOwnPropertyDescriptor(c.prototype,prop);if(d&&d.set){var os=d.set;Object.defineProperty(c.prototype,prop,{configurable:true,enumerable:d.enumerable||true,get:d.get,set:function(v){try{v=(fn||rp)(v)}catch(e){}return os.call(this,v)}})}}
+hookEl('HTMLImageElement','src',rr);hookEl('HTMLScriptElement','src',rr);hookEl('HTMLLinkElement','href',rr);hookEl('HTMLSourceElement','src',rr);hookEl('HTMLMediaElement','src',rr);hookEl('HTMLIFrameElement','src');
 try{var OL=Location.prototype;['assign','replace'].forEach(function(m){OL[m]=function(u){try{var abs=new URL(u,document.baseURI).href;navTo(abs)}catch(e){navTo(u)}}});var hd=Object.getOwnPropertyDescriptor(OL,'href');if(hd&&hd.get&&hd.set){Object.defineProperty(OL,'href',{configurable:true,enumerable:true,get:function(){return hd.get.call(this)},set:function(u){try{var abs=new URL(u,document.baseURI).href;navTo(abs)}catch(e){navTo(u)}}})}}catch(e){}
 try{var OP=history.pushState,OR=history.replaceState;history.pushState=function(s,t,u){try{if(u){var abs=new URL(u,document.baseURI).href;sendMsg({__vp:1,url:abs,soft:1})}}catch(e){}try{return OP.apply(this,arguments)}catch(e){}};history.replaceState=function(s,t,u){try{if(u){var abs=new URL(u,document.baseURI).href;sendMsg({__vp:1,url:abs,soft:1,replace:1})}}catch(e){}try{return OR.apply(this,arguments)}catch(e){}};window.addEventListener('popstate',function(){try{sendMsg({__vp:1,url:document.baseURI,soft:1,pop:1})}catch(e){}})}catch(e){}
 var oo=window.open;window.open=function(u){try{if(u){var abs=new URL(u,document.baseURI).href;navTo(abs);return null}}catch(e){}return oo?oo.apply(this,arguments):null};
