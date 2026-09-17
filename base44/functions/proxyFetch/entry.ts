@@ -73,9 +73,11 @@ export default async function(req: Request): Promise<Response> {
       "access-control-expose-headers": "*",
       "referrer-policy": "no-referrer",
     };
-    const cr = resp.headers.get("content-range");
-    if (cr) baseHeaders["content-range"] = cr;
-    if (resp.headers.get("accept-ranges")) baseHeaders["accept-ranges"] = resp.headers.get("accept-ranges");
+    const cl = resp.headers.get("content-length"); if (cl) baseHeaders["content-length"] = cl;
+    const cr = resp.headers.get("content-range"); if (cr) baseHeaders["content-range"] = cr;
+    const ar = resp.headers.get("accept-ranges"); if (ar) baseHeaders["accept-ranges"] = ar;
+    const isStaticAsset = /^(text\/css|application\/javascript|text\/javascript|application\/x-javascript|image\/|font\/|application\/font|audio\/|video\/)/.test(contentType);
+    baseHeaders["cache-control"] = isStaticAsset ? "public, max-age=31536000, immutable" : "no-store";
     if (isHtml) {
       let html = await resp.text();
       html = rewriteHtml(html, finalUrl, proxyBase);
@@ -86,9 +88,7 @@ export default async function(req: Request): Promise<Response> {
       const css = await resp.text();
       return new Response(rewriteCssUrls(css, finalUrl, proxyBase), { status: resp.status, headers: baseHeaders });
     }
-    const buf = await resp.arrayBuffer();
-    baseHeaders["content-length"] = String(buf.byteLength);
-    return new Response(buf, { status: resp.status, headers: baseHeaders });
+    return new Response(resp.body, { status: resp.status, headers: baseHeaders });
   } catch (error) {
     return Response.json({ error: error.message || "Proxy failed" }, { status: 500 });
   }
