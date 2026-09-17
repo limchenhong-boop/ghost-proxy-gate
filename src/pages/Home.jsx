@@ -46,7 +46,7 @@ export default function Home() {
     setLoading(true);
     setError(null);
     try {
-      const res = await base44.functions.invoke("proxyFetch", { url });
+      const res = await base44.functions.invoke("proxyFetch", { url, origin: window.location.origin });
       const data = res.data;
       if (data.error) throw new Error(data.error);
       if (data.nonHtml || !data.html) {
