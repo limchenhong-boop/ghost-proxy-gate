@@ -4,12 +4,12 @@ import { normalizeQuery } from "@/lib/proxy";
 import { THEMES, CLOAK_PRESETS, loadTheme, saveTheme, loadCloak, saveCloak, applyCloak } from "@/lib/settings";
 import VelocitySearch from "@/components/VelocitySearch";
 import ProxyFrame from "@/components/ProxyFrame";
-import CloakBar from "@/components/CloakBar";
-import NavBar from "@/components/NavBar";
 import QuickApps from "@/components/QuickApps";
 import AppFooter from "@/components/AppFooter";
 import SettingsPanel from "@/components/SettingsPanel";
-import { X } from "lucide-react";
+import TabCloakPanel from "@/components/TabCloakPanel";
+import ThemePanel from "@/components/ThemePanel";
+import { Eye, Palette, X } from "lucide-react";
 
 export default function Home() {
   const [view, setView] = useState("home");
@@ -134,12 +134,27 @@ export default function Home() {
       {/* network background */}
       <div className="fixed inset-0 vp-net-bg pointer-events-none opacity-60" aria-hidden="true" />
 
-      {view === "home" && (
-        <>
-          <CloakBar />
-          <NavBar onHome={goHome} onNavigate={navigate} />
-        </>
-      )}
+      <header className="relative z-10 flex items-center justify-between px-4 sm:px-6 py-3">
+        <div />
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setPanel(panel === "cloak" ? null : "cloak")}
+            className="vp-pill"
+            style={panel === "cloak" ? vpActive : vpIdle}
+          >
+            <Eye className="w-4 h-4" />
+            <span className="hidden sm:inline text-sm font-medium">Cloak</span>
+          </button>
+          <button
+            onClick={() => setPanel(panel === "theme" ? null : "theme")}
+            className="vp-pill"
+            style={panel === "theme" ? vpActive : vpIdle}
+          >
+            <Palette className="w-4 h-4" />
+            <span className="hidden sm:inline text-sm font-medium">Theme</span>
+          </button>
+        </div>
+      </header>
 
       <main className="relative z-10 flex-1 flex flex-col min-h-0">
         {view === "home" ? (
@@ -193,7 +208,11 @@ export default function Home() {
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <SettingsPanel cloak={cloak} theme={theme} onApplyCloak={applyCloakPreset} onApplyTheme={applyTheme} />
+            {panel === "cloak" && <TabCloakPanel cloak={cloak} onApply={applyCloakPreset} />}
+            {panel === "theme" && <ThemePanel theme={theme} onApply={applyTheme} />}
+            {panel === "settings" && (
+              <SettingsPanel cloak={cloak} theme={theme} onApplyCloak={applyCloakPreset} onApplyTheme={applyTheme} />
+            )}
           </aside>
         </>
       )}
