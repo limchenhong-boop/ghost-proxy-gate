@@ -25,23 +25,35 @@ export default async function(req: Request): Promise<Response> {
     const ua =
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
     const method = fromSdk ? "GET" : req.method || "GET";
-    const headers: Record<string, string> = {
-      "user-agent": ua,
-      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "accept-language": "en-US,en;q=0.9",
-      referer: parsed.href,
-      origin: parsed.origin,
-    };
-    if (!fromSdk) {
+    const headers: Record<string, string> = {};
+    if (fromSdk) {
+      Object.assign(headers, {
+        "user-agent": ua,
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.8",
+        "accept-language": "en-US,en;q=0.9",
+        "accept-encoding": "gzip, deflate, br",
+        "cache-control": "max-age=0",
+        "upgrade-insecure-requests": "1",
+        "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "none",
+        "sec-fetch-user": "?1",
+        referer: parsed.origin + "/",
+      });
+    } else {
       const skip = new Set([
         "host", "connection", "content-length", "accept-encoding", "transfer-encoding", "upgrade",
-        "origin", "referer", "user-agent", "accept", "accept-language",
-        "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest", "sec-fetch-user",
-        "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
+        "origin", "referer", "cookie", "authorization",
       ]);
       for (const [k, v] of req.headers.entries()) {
-        if (!skip.has(k.toLowerCase())) headers[k] = v;
+        const lk = k.toLowerCase();
+        if (skip.has(lk) || lk.startsWith("x-") || lk.startsWith("cf-") || lk.startsWith("cdn-") || lk === "via" || lk === "true-client-ip") continue;
+        headers[lk] = v;
       }
+      headers["referer"] = parsed.origin + "/";
     }
     const fetchOpts: any = { method, headers, redirect: "follow" };
     if (!["GET", "HEAD"].includes(method)) {
@@ -51,7 +63,6 @@ export default async function(req: Request): Promise<Response> {
     const resp = await fetch(parsed.href, fetchOpts);
     const contentType = resp.headers.get("content-type") || "";
     const finalUrl = resp.url || parsed.href;
-    const proxyBase = clientOrigin + "/functions/proxyFetch?url=";
     const isHtml = contentType.includes("text/html") || contentType.includes("application/xhtml");
 
     if (fromSdk) {
@@ -59,12 +70,11 @@ export default async function(req: Request): Promise<Response> {
         return Response.json({ ok: true, html: null, finalUrl, contentType, nonHtml: true });
       }
       let html = await resp.text();
-      html = rewriteHtml(html, finalUrl, proxyBase);
       html = inject(html, finalUrl, clientOrigin);
       return Response.json({ ok: true, html, finalUrl, contentType });
     }
 
-    // direct browser request (asset or API)
+    // direct browser request (runtime API call); stream through with permissive CORS
     const baseHeaders = {
       "content-type": contentType || "application/octet-stream",
       "access-control-allow-origin": "*",
@@ -78,16 +88,6 @@ export default async function(req: Request): Promise<Response> {
     const ar = resp.headers.get("accept-ranges"); if (ar) baseHeaders["accept-ranges"] = ar;
     const isStaticAsset = /^(text\/css|application\/javascript|text\/javascript|application\/x-javascript|image\/|font\/|application\/font|audio\/|video\/)/.test(contentType);
     baseHeaders["cache-control"] = isStaticAsset ? "public, max-age=31536000, immutable" : "no-store";
-    if (isHtml) {
-      let html = await resp.text();
-      html = rewriteHtml(html, finalUrl, proxyBase);
-      html = inject(html, finalUrl, clientOrigin);
-      return new Response(html, { status: resp.status, headers: { ...baseHeaders, "content-type": "text/html; charset=utf-8" } });
-    }
-    if (contentType.includes("text/css")) {
-      const css = await resp.text();
-      return new Response(rewriteCssUrls(css, finalUrl, proxyBase), { status: resp.status, headers: baseHeaders });
-    }
     return new Response(resp.body, { status: resp.status, headers: baseHeaders });
   } catch (error) {
     return Response.json({ error: error.message || "Proxy failed" }, { status: 500 });
@@ -126,51 +126,6 @@ function clientScript(origin: string, finalUrl: string): string {
   ].join("");
 }
 
-function proxify(url, base, proxyBase) {
-  const u = (url || "").trim();
-  if (!u) return u;
-  if (/^(data:|javascript:|mailto:|tel:|blob:|#)/i.test(u)) return u;
-  try {
-    const abs = new URL(u, base).href;
-    return proxyBase + encodeURIComponent(abs);
-  } catch {
-    return u;
-  }
-}
-
-function rewriteSrcset(value, base, proxyBase) {
-  return value
-    .split(",")
-    .map((part) => {
-      const seg = part.trim();
-      if (!seg) return seg;
-      const [u, ...d] = seg.split(/\s+/);
-      return proxify(u, base, proxyBase) + (d.length ? " " + d.join(" ") : "");
-    })
-    .join(", ");
-}
-
-function rewriteCssUrls(css, base, proxyBase) {
-  return css
-    .replace(/url\(\s*['"]?([^'")]+)['"]?\s*\)/gi, (m, u) => "url(" + proxify(u, base, proxyBase) + ")")
-    .replace(/@import\s+['"]([^'"]+)['"]/gi, (m, u) => "@import '" + proxify(u, base, proxyBase) + "'");
-}
-
-function rewriteHtml(html, base, proxyBase) {
-  html = html.replace(/<link\b[^>]*>/gi, (tag) =>
-    tag
-      .replace(/(\shref\s*=\s*")([^"]*)"/i, (m, pre, v) => pre + proxify(v, base, proxyBase) + '"')
-      .replace(/(\shref\s*=\s*')([^']*)'/i, (m, pre, v) => pre + proxify(v, base, proxyBase) + "'")
-  );
-  html = html
-    .replace(/(\s(?:src|poster|data-src)\s*=\s*")([^"]*)"/gi, (m, pre, v) => pre + proxify(v, base, proxyBase) + '"')
-    .replace(/(\s(?:src|poster|data-src)\s*=\s*')([^']*)'/gi, (m, pre, v) => pre + proxify(v, base, proxyBase) + "'");
-  html = html
-    .replace(/(\ssrcset\s*=\s*")([^"]*)"/gi, (m, pre, v) => pre + rewriteSrcset(v, base, proxyBase) + '"')
-    .replace(/(\ssrcset\s*=\s*')([^']*)'/gi, (m, pre, v) => pre + rewriteSrcset(v, base, proxyBase) + "'");
-  html = html
-    .replace(/(\sstyle\s*=\s*")([^"]*)"/gi, (m, pre, v) => pre + rewriteCssUrls(v, base, proxyBase).replace(/"/g, "&quot;") + '"')
-    .replace(/(\sstyle\s*=\s*')([^']*)'/gi, (m, pre, v) => pre + rewriteCssUrls(v, base, proxyBase) + "'");
-  html = html.replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gi, (m, inner) => "<style>" + rewriteCssUrls(inner, base, proxyBase) + "</style>");
-  return html;
-}
+// Asset URLs are intentionally left untouched: the <base> tag (injected in inject())
+// makes relative URLs resolve to the real origin, so the browser loads JS/CSS/images
+// directly from the site's own CDN — fast, reliable, and CSP-safe (no app CSP is set).
