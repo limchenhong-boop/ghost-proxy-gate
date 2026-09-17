@@ -30,6 +30,13 @@ export default function Home() {
     applyCloak(cloak);
   }, [cloak]);
 
+  const [blurred, setBlurred] = useState(false);
+  useEffect(() => {
+    const onVis = () => { if (document.hidden) setBlurred(true); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
   const navigate = useCallback(async (rawUrl, mode = "new") => {
     const url = normalizeQuery(rawUrl);
     if (!url) return;
@@ -144,16 +151,16 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="flex-1 flex flex-col px-4 sm:px-6 pb-4 min-h-0">
+      <main className="flex-1 flex flex-col min-h-0">
         {view === "home" ? (
-          <div className="flex-1 flex flex-col items-center justify-center gap-10 py-10">
-            <h1 className="ghost-word text-6xl sm:text-7xl vp-fade-up">ghost</h1>
+          <div className="flex-1 flex flex-col items-center justify-center gap-10 px-4 sm:px-6 py-10">
+            <h1 className="ghost-word text-7xl sm:text-8xl vp-fade-up">ghost</h1>
             <div className="w-full max-w-xl vp-fade-up" style={{ animationDelay: "0.08s" }}>
               <VelocitySearch value={query} onChange={setQuery} onSubmit={() => navigate(query)} loading={loading} />
             </div>
           </div>
         ) : (
-          <div className="flex-1 min-h-0 rounded-2xl overflow-hidden border" style={{ borderColor: "color-mix(in srgb, var(--vp-accent) 25%, transparent)" }}>
+          <div className="flex-1 min-h-0">
             <ProxyFrame
               currentUrl={currentUrl}
               html={html}
@@ -190,6 +197,16 @@ export default function Home() {
             {panel === "theme" && <ThemePanel theme={theme} onApply={applyTheme} />}
           </aside>
         </>
+      )}
+
+      {blurred && (
+        <div
+          onClick={() => setBlurred(false)}
+          className="fixed inset-0 z-[200] flex items-center justify-center cursor-pointer select-none"
+          style={{ backdropFilter: "blur(28px)", WebkitBackdropFilter: "blur(28px)", background: "rgba(0,0,0,0.55)" }}
+        >
+          <span className="text-white/70 text-xl font-light tracking-wide lowercase">click to focus</span>
+        </div>
       )}
     </div>
   );

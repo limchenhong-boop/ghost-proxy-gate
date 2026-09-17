@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&family=Dancing+Script:wght@500;600;700&display=swap');
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -142,12 +142,16 @@
   0%, 100% { text-shadow: 0 0 18px rgba(255,255,255,0.35), 0 0 40px rgba(255,255,255,0.12); opacity: 0.88; }
   50% { text-shadow: 0 0 30px rgba(255,255,255,0.7), 0 0 64px rgba(255,255,255,0.32); opacity: 1; }
 }
+@keyframes vp-ghost-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
 .ghost-word {
-  font-family: 'Cinzel', ui-serif, serif;
+  font-family: 'Dancing Script', cursive;
   font-weight: 600;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.02em;
   color: #fff;
-  animation: vp-ghost-glow 3.5s ease-in-out infinite;
+  animation: vp-ghost-glow 3.5s ease-in-out infinite, vp-ghost-float 6s ease-in-out infinite;
 }
 
 /* animated search bar */
