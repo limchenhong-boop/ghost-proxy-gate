@@ -90,3 +90,97 @@
     @apply bg-background text-foreground font-body;
   }
 }
+
+/* ===== Velocity Proxy ===== */
+@keyframes vp-rotate {
+  to { transform: rotate(360deg); }
+}
+@keyframes vp-fade-up {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes vp-slide-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.vp-gradient-text {
+  background: linear-gradient(135deg, var(--vp-accent, #a855f7), var(--vp-accent2, #ec4899));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.vp-fade-up {
+  animation: vp-fade-up 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.vp-slide-in {
+  animation: vp-slide-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.vp-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.7rem;
+  border-radius: 9999px;
+  color: rgba(255,255,255,0.8);
+  transition: all 0.15s ease;
+}
+.vp-pill:hover { color: #fff; }
+
+.vp-glass {
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+/* animated search bar */
+.vp-border-wrap {
+  position: relative;
+  border-radius: 9999px;
+  padding: 2px;
+}
+.vp-border-rot {
+  position: absolute;
+  inset: -2px;
+  border-radius: 9999px;
+  background: conic-gradient(from 0deg, #ff2d95, #8b5cf6, #2563eb, #06b6d4, #ec4899, #ff2d95);
+  animation: vp-rotate 4s linear infinite;
+  z-index: 0;
+}
+.vp-input-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.5rem 0.5rem 1.1rem;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--vp-bg, #0B0314) 92%, black);
+}
+.vp-glow {
+  position: absolute;
+  inset: -14px;
+  border-radius: 9999px;
+  background: conic-gradient(from 0deg, #ff2d95, #8b5cf6, #2563eb, #06b6d4, #ec4899, #ff2d95);
+  filter: blur(22px);
+  opacity: 0.5;
+  animation: vp-rotate 4s linear infinite;
+  z-index: -1;
+}
+.vp-go-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.6rem 1.1rem;
+  border-radius: 9999px;
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.9rem;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 6px 20px -6px var(--vp-accent, #a855f7);
+}
+.vp-go-btn:hover:not(:disabled) { transform: translateY(-1px); }
+.vp-go-btn:disabled { opacity: 0.5; cursor: not-allowed; }
