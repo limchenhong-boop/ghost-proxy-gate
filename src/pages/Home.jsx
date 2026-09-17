@@ -19,6 +19,7 @@ export default function Home() {
   const [openDirectUrl, setOpenDirectUrl] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [diag, setDiag] = useState(null);
   const loadTimer = useRef(null);
   const blankTimer = useRef(null);
   const [history, setHistory] = useState([]);
@@ -47,19 +48,20 @@ export default function Home() {
     setLoading(true);
     setError(null);
     setOpenDirectUrl(null);
+    setDiag(null);
     if (loadTimer.current) clearTimeout(loadTimer.current);
     loadTimer.current = setTimeout(() => {
       setLoading(false);
-      setError("This site is taking too long or blocked the proxy.");
-    }, 20000);
+      setError("This site is taking too long to respond through the proxy.");
+    }, 25000);
   }, []);
 
   const onLoaded = useCallback(() => {
     setLoading(false);
     if (loadTimer.current) clearTimeout(loadTimer.current);
-    // After the document settles, inspect for a blank/anti-bot page and fall
-    // back to open-direct. srcDoc with allow-same-origin is same-origin with
-    // the parent, so contentDocument is readable here.
+    // After the document settles, detect a genuinely blank render and show a
+    // diagnostic — NOT an automatic open-direct. srcDoc with allow-same-origin
+    // is same-origin with the parent, so contentDocument is readable here.
     if (blankTimer.current) clearTimeout(blankTimer.current);
     blankTimer.current = setTimeout(() => {
       try {
@@ -67,18 +69,16 @@ export default function Home() {
         const doc = f && f.contentDocument;
         if (doc && doc.body) {
           const text = (doc.body.innerText || "").trim();
-          if (
-            text.length < 10 ||
-            (text.length < 200 &&
-              /page not available|not available|access denied|captcha|verify you are a human|are you a robot|blocked/i.test(text))
-          ) {
-            setOpenDirectUrl(currentUrl || "");
+          const htmlLen = (doc.body.innerHTML || "").length;
+          if (text.length < 3 && htmlLen < 200) {
+            setError("Proxy loaded the page but it rendered blank. The site may require login, use client-side origin checks, or block proxies.");
+            setDiag({ url: currentUrl, note: "Blank document after load" });
           }
         }
       } catch (e) {
         /* opaque document — can't inspect, leave as-is */
       }
-    }, 4000);
+    }, 6000);
   }, [currentUrl]);
 
   const pushHistory = useCallback((url) => {
@@ -91,15 +91,43 @@ export default function Home() {
     });
   }, []);
 
-  const navigate = useCallback(async (rawUrl, mode = "new") => {
+  const replaceHistory = useCallback((url) => {
+    setHistory((prev) => {
+      const n = [...prev];
+      if (histIndexRef.current >= 0) n[histIndexRef.current] = url;
+      return n;
+    });
+  }, []);
+
+  const navigate = useCallback(async (rawUrl, opts = {}) => {
     const url = normalizeQuery(rawUrl);
     if (!url) return;
+    const mode = opts.mode || "new";
     startLoad();
     try {
-      const res = await base44.functions.invoke("proxyFetch", { url, origin: window.location.origin });
+      const payload = { url, origin: window.location.origin };
+      if (opts.method && opts.method !== "GET") {
+        payload.method = opts.method;
+        payload.body = opts.body || "";
+        payload.contentType = opts.contentType || "application/x-www-form-urlencoded";
+      }
+      const res = await base44.functions.invoke("proxyFetch", payload);
       const data = (res && res.data) || {};
       if (data.error) throw new Error(data.error);
-      if (data.blocked || data.nonHtml) {
+      if (data.blocked) {
+        // Genuine anti-bot / block page — show a diagnostic; open-direct is a
+        // manual fallback, NOT an automatic bypass.
+        setOpenDirectUrl(data.finalUrl || url);
+        setError(data.error || "The site served an anti-bot or block page.");
+        setDiag({ url: data.finalUrl || url, status: data.status, note: "Blocked / anti-bot page" });
+        setHtml("");
+        setCurrentUrl(data.finalUrl || url);
+        setView("browse");
+        if (mode === "new") pushHistory(data.finalUrl || url);
+        return;
+      }
+      if (data.nonHtml) {
+        // Non-HTML resource (image/pdf) — opening directly is the correct behavior.
         setOpenDirectUrl(data.finalUrl || url);
         setHtml("");
         setCurrentUrl(data.finalUrl || url);
@@ -114,7 +142,7 @@ export default function Home() {
       if (mode === "new") pushHistory(data.finalUrl || url);
     } catch (e) {
       setError(e.message || "Failed to load site");
-      setOpenDirectUrl(url);
+      setDiag({ url, note: "Proxy request failed" });
       setCurrentUrl(url);
       setView("browse");
     } finally {
@@ -124,26 +152,48 @@ export default function Home() {
 
   useEffect(() => {
     function onMsg(e) {
-      if (e.data && e.data.__vp && e.data.url) {
-        navigate(e.data.url, "new");
+      // Only accept messages from our own origin — the srcDoc iframe is
+      // same-origin with the parent because of allow-same-origin.
+      if (e.origin !== window.location.origin) return;
+      const d = e.data;
+      if (!d || !d.__vp) return;
+      if (d.soft) {
+        // SPA client-side navigation (pushState/replaceState/popstate) — sync the
+        // address bar + history WITHOUT a full re-fetch, so the SPA can render
+        // locally and stay smooth.
+        if (d.url) {
+          setCurrentUrl(d.url);
+          if (d.replace) replaceHistory(d.url);
+          else if (!d.pop) pushHistory(d.url);
+        }
+        return;
       }
+      if (d.formSubmit) {
+        navigate(d.formSubmit.url, {
+          method: d.formSubmit.method,
+          body: new URLSearchParams(d.formSubmit.data).toString(),
+          contentType: "application/x-www-form-urlencoded",
+        });
+        return;
+      }
+      if (d.url) navigate(d.url, { mode: "new" });
     }
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);
-  }, [navigate]);
+  }, [navigate, pushHistory, replaceHistory]);
 
   const goBack = () => {
     const ni = histIndex - 1;
     if (ni >= 0) {
       setHistIndex(ni);
-      navigate(history[ni], "back");
+      navigate(history[ni], { mode: "back" });
     }
   };
   const goForward = () => {
     const ni = histIndex + 1;
     if (ni < history.length) {
       setHistIndex(ni);
-      navigate(history[ni], "forward");
+      navigate(history[ni], { mode: "forward" });
     }
   };
   const goHome = () => {
@@ -153,13 +203,13 @@ export default function Home() {
     setCurrentUrl("");
     setQuery("");
     setError(null);
+    setDiag(null);
     setLoading(false);
     if (loadTimer.current) clearTimeout(loadTimer.current);
     if (blankTimer.current) clearTimeout(blankTimer.current);
   };
   const reload = () => {
-    if (!currentUrl) return;
-    navigate(currentUrl, "reload");
+    if (currentUrl) navigate(currentUrl, { mode: "reload" });
   };
   const openExternal = () => {
     const u = openDirectUrl || currentUrl;
@@ -236,6 +286,7 @@ export default function Home() {
               openDirectUrl={openDirectUrl}
               loading={loading}
               error={error}
+              diag={diag}
               histIndex={histIndex}
               histLen={history.length}
               onBack={goBack}

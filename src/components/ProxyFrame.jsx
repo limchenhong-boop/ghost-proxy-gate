@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from "react";
 import { ArrowLeft, ArrowRight, RotateCw, Home, ExternalLink, AlertTriangle, Loader2, Lock, Globe } from "lucide-react";
-import { prettyUrl } from "@/lib/proxy";
 
 export default function ProxyFrame({
   currentUrl,
@@ -8,6 +7,7 @@ export default function ProxyFrame({
   openDirectUrl,
   loading,
   error,
+  diag,
   histIndex,
   histLen,
   onBack,
@@ -72,7 +72,17 @@ export default function ProxyFrame({
       <div className="relative flex-1 bg-white">
         <iframe
           srcDoc={html}
-          sandbox="allow-scripts allow-forms allow-popups allow-modals allow-same-origin"
+          // allow-scripts: site JS must execute (srcDoc has no CSP).
+          // allow-forms: forms submit through the proxy.
+          // allow-popups: window.open is intercepted to stay in-proxy.
+          // allow-modals: alert/confirm from the page.
+          // allow-same-origin: srcDoc inherits parent origin so it can call the
+          //   proxy (same-origin) and the parent can inspect contentDocument for
+          //   blank detection. (allow-scripts + allow-same-origin together is a
+          //   known sandbox-escape vector; accepted here because the user is
+          //   deliberately loading untrusted proxied content.)
+          // allow-downloads: download links.
+          sandbox="allow-scripts allow-forms allow-popups allow-modals allow-same-origin allow-downloads"
           className="w-full h-full block"
           title="Ghost Proxy"
           referrerPolicy="no-referrer"
@@ -87,10 +97,10 @@ export default function ProxyFrame({
         {openDirectUrl && !loading && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center" style={{ background: "color-mix(in srgb, var(--vp-bg) 88%, black)" }}>
             <Globe className="w-10 h-10" style={{ color: "var(--vp-accent)" }} />
-            <p className="text-white font-semibold">This site can't be proxied</p>
+            <p className="text-white font-semibold">This page can't be embedded</p>
             <p className="text-white/60 text-sm max-w-md break-all">{openDirectUrl}</p>
             <p className="text-white/40 text-xs max-w-md">
-              Some sites block proxies, require login, or detect automation. Open it directly in a new tab.
+              {diag && diag.note ? diag.note : "The site served a non-HTML file or a block page that can't be rendered inside the proxy."}
             </p>
             <button
               onClick={onOpenExternal}
@@ -104,18 +114,33 @@ export default function ProxyFrame({
         {error && !loading && !openDirectUrl && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center" style={{ background: "color-mix(in srgb, var(--vp-bg) 88%, black)" }}>
             <AlertTriangle className="w-10 h-10" style={{ color: "var(--vp-accent2)" }} />
-            <p className="text-white font-semibold">Couldn't load this site</p>
+            <p className="text-white font-semibold">Proxy couldn't load this page</p>
             <p className="text-white/60 text-sm max-w-md">{error}</p>
-            <p className="text-white/40 text-xs max-w-md">
-              Some sites block proxies or require login. You can try opening it directly.
+            {diag && (
+              <div className="text-white/40 text-xs max-w-md mt-1 space-y-0.5">
+                {diag.url && <p className="break-all">URL: {diag.url}</p>}
+                {diag.status && <p>Status: {diag.status}</p>}
+                {diag.note && <p>{diag.note}</p>}
+              </div>
+            )}
+            <p className="text-white/40 text-xs max-w-md mt-1">
+              You can retry, go home, or open the original site directly as a last resort.
             </p>
-            <button
-              onClick={onOpenExternal}
-              className="mt-2 px-4 py-2 rounded-full text-sm font-semibold text-white"
-              style={{ background: "linear-gradient(135deg, var(--vp-accent), var(--vp-accent2))" }}
-            >
-              Open directly
-            </button>
+            <div className="flex gap-2 mt-2">
+              <button
+                onClick={onReload}
+                className="px-4 py-2 rounded-full text-sm font-semibold text-white"
+                style={{ background: "linear-gradient(135deg, var(--vp-accent), var(--vp-accent2))" }}
+              >
+                Retry
+              </button>
+              <button
+                onClick={onOpenExternal}
+                className="px-4 py-2 rounded-full text-sm font-semibold text-white/80 border border-white/15 inline-flex items-center gap-2"
+              >
+                <ExternalLink className="w-4 h-4" /> Open directly
+              </button>
+            </div>
           </div>
         )}
       </div>
