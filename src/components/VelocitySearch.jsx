@@ -10,7 +10,6 @@ export default function VelocitySearch({ value, onChange, onSubmit, loading, lar
       }}
       className="relative w-full"
     >
-      <div className="vp-glow" aria-hidden="true" />
       <div className="vp-border-wrap">
         <div className="vp-border-rot" aria-hidden="true" />
         <div className="vp-input-inner">

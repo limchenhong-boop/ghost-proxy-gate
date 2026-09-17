@@ -174,16 +174,6 @@
   border-radius: 9999px;
   background: color-mix(in srgb, var(--vp-bg, #0B0314) 92%, black);
 }
-.vp-glow {
-  position: absolute;
-  inset: -14px;
-  border-radius: 9999px;
-  background: conic-gradient(from 0deg, #ffffff, #9ca3af, #ffffff, #d1d5db, #6b7280, #ffffff);
-  filter: blur(22px);
-  opacity: 0.5;
-  animation: vp-rotate 4s linear infinite;
-  z-index: -1;
-}
 .vp-go-btn {
   display: inline-flex;
   align-items: center;
