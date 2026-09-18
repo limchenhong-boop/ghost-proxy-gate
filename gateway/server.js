@@ -27,6 +27,7 @@ const PORT = parseInt(process.env.PORT || "8080", 10);
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS || "*";
 const TIMEOUT_MS = 20000;
 const CONNECT_TIMEOUT_MS = 10000;
+const BUILD_VERSION = "v3-withtimeout";
 
 if (!PROXY_URL) {
   console.error("FATAL: PROXY_URL env var is required (http://USER:PASS@host:port)");
@@ -131,7 +132,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ---- health (no auth) ----
-  if (url.pathname === "/health") return sendJson(res, 200, { ok: true });
+  if (url.pathname === "/health") return sendJson(res, 200, { ok: true, build: BUILD_VERSION });
 
   // ---- auth ----
   if (!checkKey(req, url)) return sendJson(res, 401, { error: "Unauthorized" });
