@@ -182,7 +182,7 @@ export default async function(req: Request): Promise<Response> {
     // frontend can't access it directly — it goes through this function.
     const reqUrl0 = new URL(req.url);
     if (req.method === "POST" && !reqUrl0.searchParams.has("url")) {
-      const body = await req.json().catch(() => ({}));
+      const body = await req.clone().json().catch(() => ({}));
       if (body.action === "config") {
         const gatewayUrl = (secrets.get("GATEWAY_URL") || "").replace(/\/$/, "");
         return Response.json({ ok: true, gatewayUrl });
