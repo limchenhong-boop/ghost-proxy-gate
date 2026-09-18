@@ -300,16 +300,26 @@ async function handleProxyRequest(req: Request): Promise<Response> {
     return Response.json({ ok: true, html: inject(htmlBody, finalUrl, clientOrigin), finalUrl, contentType, status, transport });
   }
 
-  // Try direct fetch for sub-resources (fast, works for CDNs). Only fall back
-  // to the gateway on an actual network error — a non-200 status (403, 404)
-  // is still served as-is so the browser gets the real response code.
+  // Try direct fetch for sub-resources (fast, works for CDNs). Fall back to the
+  // residential gateway on network errors AND on anti-bot block responses
+  // (403/429/503) so same-origin resources on protected sites load fully.
   let resp: Response;
+  const reqForGateway = req.clone();
   try {
     resp = await fetchRawDirect(parsed.href, req);
+    if ([403, 429, 503].includes(resp.status)) {
+      try { resp.body?.cancel(); } catch {}
+      try {
+        const gwResp = await fetchRawViaGateway(parsed.href, reqForGateway);
+        if (gwResp.status < 500) resp = gwResp;
+      } catch (e2) {
+        console.log("[proxyFetch] gateway fallback for blocked resource failed:", e2.message);
+      }
+    }
   } catch (e) {
     console.log("[proxyFetch] raw direct failed, trying gateway:", e.message);
     try {
-      resp = await fetchRawViaGateway(parsed.href, req);
+      resp = await fetchRawViaGateway(parsed.href, reqForGateway);
     } catch (e2) {
       return new Response("Sub-resource could not be loaded: " + e2.message, { status: 502, headers: { "content-type": "text/plain", ...corsHeaders(proxyOrigin) } });
     }
