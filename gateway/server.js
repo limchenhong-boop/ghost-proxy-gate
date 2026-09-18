@@ -25,7 +25,8 @@ const PROXY_URL = process.env.PROXY_URL || "";
 const API_KEY = process.env.API_KEY || "";
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS || "*";
-const TIMEOUT_MS = 30000;
+const TIMEOUT_MS = 20000;
+const CONNECT_TIMEOUT_MS = 10000;
 
 if (!PROXY_URL) {
   console.error("FATAL: PROXY_URL env var is required (http://USER:PASS@host:port)");
@@ -40,6 +41,7 @@ const dispatcher = new ProxyAgent({
   uri: PROXY_URL,
   headersTimeout: TIMEOUT_MS,
   bodyTimeout: TIMEOUT_MS,
+  connect: { timeout: CONNECT_TIMEOUT_MS },
 });
 const directAgent = new Agent({ headersTimeout: TIMEOUT_MS, bodyTimeout: TIMEOUT_MS });
 
@@ -116,6 +118,30 @@ const server = http.createServer(async (req, res) => {
       const r = await uFetch("https://api.ipify.org?format=json", { dispatcher });
       const j = await r.json();
       return sendJson(res, 200, { ip: j.ip, status: r.status });
+    }
+
+    // ---- /diag : surface the actual proxy error (no credentials leaked) ----
+    if (url.pathname === "/diag") {
+      let proxyHost = "", proxyPort = "", proxyScheme = "";
+      try {
+        const pu = new URL(PROXY_URL);
+        proxyHost = pu.hostname;
+        proxyPort = pu.port;
+        proxyScheme = pu.protocol;
+      } catch (e) { proxyScheme = "INVALID_URL"; }
+      let ipErr = null, ipOk = false, ip = null;
+      try {
+        const r = await uFetch("https://api.ipify.org?format=json", { dispatcher });
+        ipOk = r.ok;
+        const j = await r.json().catch(() => ({}));
+        ip = j.ip || null;
+      } catch (e) { ipErr = e.message; }
+      return sendJson(res, 200, {
+        proxyScheme, proxyHost, proxyPort,
+        proxyReachable: ipOk,
+        egressIp: ip,
+        error: ipErr,
+      });
     }
 
     // ---- /fetch : POST JSON, returns JSON { body } (for HTML documents) ----
