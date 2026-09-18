@@ -46,6 +46,28 @@ async function fetchViaGateway(target: string): Promise<{ status: number; conten
   }
 }
 
+// Stream a same-origin sub-resource (JS/CSS/image/API GET) through the gateway's
+// /raw endpoint so it egresses from the residential IP too. Without this, the
+// main document arrives via the residential proxy but its same-origin resources
+// are fetched from the Base44 worker's datacenter IP — sites detect the mismatch
+// and block them, leaving the page blank.
+async function fetchRawViaGateway(target: string, req: Request): Promise<Response | null> {
+  if (!GATEWAY_URL || !GATEWAY_API_KEY) return null;
+  try {
+    const u = new URL(GATEWAY_URL + "/raw");
+    u.searchParams.set("url", target);
+    const gh: Record<string, string> = { "x-api-key": GATEWAY_API_KEY };
+    const range = req.headers.get("range");
+    if (range) gh["range"] = range;
+    const r = await fetch(u.href, { method: "GET", headers: gh, redirect: "follow" });
+    if (!r.ok) { console.log("[proxyFetch] gateway /raw non-ok", r.status); return null; }
+    return r;
+  } catch (e: any) {
+    console.log("[proxyFetch] gateway /raw failed", e.message);
+    return null;
+  }
+}
+
 const BLOCK_PATTERNS = [
   /\/sorry\/index/i,          // Google anti-bot
   /captcha/i,
@@ -163,12 +185,19 @@ export default async function(req: Request): Promise<Response> {
     }
   }
   if (gwHtml === null) {
-    try {
-      resp = await fetch(parsed.href, fetchOpts);
-    } catch (e: any) {
-      console.log("[proxyFetch] network error", parsed.href, e.message);
-      if (isSdk) return Response.json({ ok: false, blocked: true, error: e.message || "Network error", finalUrl: parsed.href });
-      return new Response("Proxy fetch failed: " + (e.message || ""), { status: 502, headers: { "content-type": "text/plain" } });
+    let gwResp: Response | null = null;
+    if (!isSdk && method === "GET") gwResp = await fetchRawViaGateway(parsed.href, req);
+    if (gwResp) {
+      resp = gwResp;
+      console.log("[proxyFetch] using gateway /raw for", parsed.href);
+    } else {
+      try {
+        resp = await fetch(parsed.href, fetchOpts);
+      } catch (e: any) {
+        console.log("[proxyFetch] network error", parsed.href, e.message);
+        if (isSdk) return Response.json({ ok: false, blocked: true, error: e.message || "Network error", finalUrl: parsed.href });
+        return new Response("Proxy fetch failed: " + (e.message || ""), { status: 502, headers: { "content-type": "text/plain" } });
+      }
     }
   }
 
