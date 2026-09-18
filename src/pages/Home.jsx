@@ -1,64 +1,34 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { normalizeQuery } from "@/lib/proxy";
-import { THEMES, CLOAK_PRESETS, loadTheme, saveTheme, loadCloak, saveCloak, applyCloak } from "@/lib/settings";
+import { loadTheme, saveTheme, loadCloak, saveCloak, applyCloak } from "@/lib/settings";
 import VelocitySearch from "@/components/VelocitySearch";
-import ProxyFrame from "@/components/ProxyFrame";
 import QuickApps from "@/components/QuickApps";
 import AppFooter from "@/components/AppFooter";
 import SettingsPanel from "@/components/SettingsPanel";
 import TabCloakPanel from "@/components/TabCloakPanel";
 import ThemePanel from "@/components/ThemePanel";
-import { Eye, Palette, X } from "lucide-react";
+import UpdatePopup from "@/components/UpdatePopup";
+import { Eye, Palette, X, ExternalLink, Check } from "lucide-react";
 import { base44 } from "@/api/base44Client";
 
 
 export default function Home() {
-  const [view, setView] = useState("home");
   const [query, setQuery] = useState("");
-  const [currentUrl, setCurrentUrl] = useState("");
-  const [frameSrc, setFrameSrc] = useState("");
-  const [frameKey, setFrameKey] = useState(0);
-  const [gatewayUrl, setGatewayUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [history, setHistory] = useState([]);
-  const [histIndex, setHistIndex] = useState(-1);
-  const histIndexRef = useRef(-1);
   const [panel, setPanel] = useState(null);
   const [cloak, setCloak] = useState(loadCloak);
   const [theme, setTheme] = useState(loadTheme);
+  const [gatewayUrl, setGatewayUrl] = useState("");
+  const [toast, setToast] = useState(null);
 
-  useEffect(() => {
-    histIndexRef.current = histIndex;
-  }, [histIndex]);
-
-  useEffect(() => {
-    applyCloak(cloak);
-  }, [cloak]);
+  useEffect(() => { applyCloak(cloak); }, [cloak]);
 
   const [blurred, setBlurred] = useState(false);
   useEffect(() => {
     const onVis = () => { if (document.hidden) setBlurred(true); };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
-  }, []);
-
-  const pushHistory = useCallback((url) => {
-    setHistory((prev) => {
-      const trimmed = prev.slice(0, histIndexRef.current + 1);
-      const next = [...trimmed, url];
-      histIndexRef.current = next.length - 1;
-      setHistIndex(next.length - 1);
-      return next;
-    });
-  }, []);
-
-  const replaceHistory = useCallback((url) => {
-    setHistory((prev) => {
-      const n = [...prev];
-      if (histIndexRef.current >= 0) n[histIndexRef.current] = url;
-      return n;
-    });
   }, []);
 
   // Resolve the Scramjet gateway URL once (it's a secret, so the frontend asks
@@ -72,76 +42,35 @@ export default function Home() {
     return url;
   }, [gatewayUrl]);
 
-  // Core: load a page through the Scramjet gateway iframe. The gateway page
-  // (proxy.html) registers a service worker that intercepts every request the
-  // proxied site makes, so full SPAs like YouTube/TikTok render correctly —
-  // something the old srcDoc approach could never do.
-  const loadPage = useCallback(async (rawUrl, opts = {}) => {
+  // Open the gateway proxy page as a top-level document. Scramjet needs
+  // cross-origin isolation (COOP/COEP) for its WASM transport, which a
+  // cross-origin iframe can't get — Chrome blocks embedded attempts with
+  // ERR_BLOCKED_BY_RESPONSE. A top-level (new tab) page works fully.
+  const navigate = useCallback(async (rawUrl) => {
     const url = normalizeQuery(rawUrl);
     if (!url) return;
     setLoading(true);
     setError(null);
-    setCurrentUrl(url);
-    setView("browse");
-    if (!opts.mode || opts.mode === "new") pushHistory(url);
     try {
       const gw = await ensureGateway();
-      setFrameSrc(`${gw}/proxy.html?url=${encodeURIComponent(url)}`);
-      setFrameKey((k) => k + 1);
+      const proxyPage = `${gw}/proxy.html?url=${encodeURIComponent(url)}`;
+      const win = window.open(proxyPage, "_blank", "noopener,noreferrer");
+      if (!win) {
+        // Popup blocked — navigate this tab instead.
+        window.location.href = proxyPage;
+      } else {
+        setToast({ url });
+        setTimeout(() => setToast(null), 4500);
+      }
     } catch (e) {
-      setError(e.message || "Failed to load page through the proxy.");
+      setError(e.message || "Failed to open the proxy.");
+    } finally {
       setLoading(false);
     }
-  }, [ensureGateway, pushHistory]);
+  }, [ensureGateway]);
 
-  const navigate = useCallback((rawUrl) => {
-    loadPage(rawUrl, { mode: "new" });
-  }, [loadPage]);
-
-  const goBack = () => {
-    const ni = histIndex - 1;
-    if (ni >= 0) {
-      setHistIndex(ni);
-      loadPage(history[ni], { mode: "replace" });
-    }
-  };
-  const goForward = () => {
-    const ni = histIndex + 1;
-    if (ni < history.length) {
-      setHistIndex(ni);
-      loadPage(history[ni], { mode: "replace" });
-    }
-  };
-  const goHome = () => {
-    setView("home");
-    setFrameSrc("");
-    setCurrentUrl("");
-    setQuery("");
-    setError(null);
-    setLoading(false);
-    setHistory([]);
-    setHistIndex(-1);
-    histIndexRef.current = -1;
-  };
-  const reload = () => {
-    if (currentUrl) loadPage(currentUrl, { mode: "replace" });
-  };
-  const openExternal = () => {
-    const u = currentUrl;
-    if (u) window.open(u, "_blank", "noopener");
-  };
-  const onLoaded = () => {
-    setLoading(false);
-  };
-
-  const applyTheme = (t) => {
-    setTheme(t);
-    saveTheme(t.id);
-  };
-  const applyCloakPreset = (c) => {
-    setCloak(c);
-    saveCloak(c);
-  };
+  const applyTheme = (t) => { setTheme(t); saveTheme(t.id); };
+  const applyCloakPreset = (c) => { setCloak(c); saveCloak(c); };
 
   const rootStyle = {
     "--vp-bg": theme.bg,
@@ -153,8 +82,9 @@ export default function Home() {
 
   return (
     <div className="h-screen w-full flex flex-col text-white overflow-hidden" style={rootStyle}>
-      {/* network background */}
       <div className="fixed inset-0 vp-net-bg pointer-events-none opacity-60" aria-hidden="true" />
+
+      <UpdatePopup />
 
       <header className="relative z-10 flex items-center justify-between px-4 sm:px-6 py-3">
         <div />
@@ -179,46 +109,18 @@ export default function Home() {
       </header>
 
       <main className="relative z-10 flex-1 flex flex-col min-h-0">
-        {view === "home" ? (
-          <div className="flex-1 flex flex-col items-center justify-center gap-8 px-4 sm:px-6 py-8 overflow-y-auto">
-            <h1 className="ghost-word text-7xl sm:text-8xl vp-fade-up">ghost</h1>
-            <div className="w-full max-w-xl vp-fade-up" style={{ animationDelay: "0.08s" }}>
-              <VelocitySearch value={query} onChange={setQuery} onSubmit={() => navigate(query)} loading={loading} />
-              <p className="text-center text-white/40 text-xs mt-3">
-                Press{" "}
-                <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-white/60 text-[10px] font-mono mx-0.5">
-                  Ctrl+Y
-                </kbd>{" "}
-                to open command palette
-              </p>
-            </div>
-            <div className="w-full vp-fade-up" style={{ animationDelay: "0.16s" }}>
-              <QuickApps onOpen={navigate} />
-            </div>
+        <div className="flex-1 flex flex-col items-center justify-center gap-8 px-4 sm:px-6 py-8 overflow-y-auto">
+          <h1 className="ghost-word text-7xl sm:text-8xl vp-fade-up">ghost</h1>
+          <div className="w-full max-w-xl vp-fade-up" style={{ animationDelay: "0.08s" }}>
+            <VelocitySearch value={query} onChange={setQuery} onSubmit={() => navigate(query)} loading={loading} />
+            {error && <p className="text-center text-red-300/80 text-xs mt-3">{error}</p>}
           </div>
-        ) : (
-          <div className="fixed inset-0 z-10 flex flex-col">
-            <ProxyFrame
-              currentUrl={currentUrl}
-              frameSrc={frameSrc}
-              frameKey={frameKey}
-              loading={loading}
-              error={error}
-              histIndex={histIndex}
-              histLen={history.length}
-              onBack={goBack}
-              onForward={goForward}
-              onReload={reload}
-              onHome={goHome}
-              onNavigate={(u) => navigate(u)}
-              onOpenExternal={openExternal}
-              onLoaded={onLoaded}
-            />
+          <div className="w-full vp-fade-up" style={{ animationDelay: "0.16s" }}>
+            <QuickApps onOpen={navigate} />
           </div>
-        )}
+        </div>
       </main>
 
-      {/* settings drawer */}
       {panel && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setPanel(null)} />
@@ -241,7 +143,26 @@ export default function Home() {
         </>
       )}
 
-      {view === "home" && <AppFooter onSettings={() => setPanel("settings")} />}
+      <AppFooter onSettings={() => setPanel("settings")} />
+
+      {toast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[120] vp-glass vp-fade-up rounded-full px-4 py-2.5 flex items-center gap-2.5"
+          style={{ background: "color-mix(in srgb, var(--vp-bg) 85%, black)", border: "1px solid rgba(255,255,255,0.1)" }}>
+          <span className="w-5 h-5 rounded-full flex items-center justify-center" style={{ background: "var(--vp-accent)" }}>
+            <Check className="w-3 h-3 text-white" />
+          </span>
+          <span className="text-sm text-white/80">Opened in a new tab</span>
+          <a
+            href={`${gatewayUrl}/proxy.html?url=${encodeURIComponent(toast.url)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-white/50 hover:text-white inline-flex items-center gap-1"
+            title="Reopen"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+          </a>
+        </div>
+      )}
 
       {blurred && (
         <div
