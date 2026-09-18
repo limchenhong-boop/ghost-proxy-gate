@@ -54,14 +54,12 @@ export default function Home() {
     setView("browse");
     try {
       const response = await base44.functions.invoke("proxyFetch", { action: "config" });
-      if (!response.data?.gatewayUrl) throw new Error("The browsing gateway is not configured.");
+      if (!response.data?.ok || !response.data?.gatewayUrl) throw new Error(response.data?.error || "The browsing gateway is not configured.");
       const gateway = new URL(response.data.gatewayUrl);
       if (gateway.protocol !== "https:") throw new Error("The browsing gateway requires an HTTPS address.");
-      const healthResponse = await fetch(new URL("/health", gateway), { credentials: "omit", signal: AbortSignal.timeout(12000) });
-      if (!healthResponse.ok) throw new Error("The browsing gateway is unavailable.");
-      const health = await healthResponse.json();
-      if (health.build !== "scramjet-v6-wisp-connect" || health.wispVersion !== "0.4.1" || health.directFallback !== false) {
-        throw new Error("The repaired Wisp gateway has not been deployed yet. Browsing is paused rather than using the old broken request flow.");
+      const health = response.data.health;
+      if (health?.build !== "scramjet-v6-wisp-connect" || health?.wispVersion !== "0.4.1" || health?.directFallback !== false) {
+        throw new Error("Render is still serving an older gateway build. Deploy the current Wisp gateway before browsing.");
       }
       const page = new URL("/proxy.html", gateway);
       page.searchParams.set("url", url);

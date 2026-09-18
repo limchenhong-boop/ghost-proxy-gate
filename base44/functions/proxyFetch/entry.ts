@@ -185,7 +185,13 @@ export default async function(req: Request): Promise<Response> {
       const body = await req.clone().json().catch(() => ({}));
       if (body.action === "config") {
         const gatewayUrl = (secrets.get("GATEWAY_URL") || "").replace(/\/$/, "");
-        return Response.json({ ok: true, gatewayUrl });
+        if (!gatewayUrl) return Response.json({ ok: false, error: "The browsing gateway is not configured." }, { status: 503 });
+        const parsedGateway = new URL(gatewayUrl);
+        if (parsedGateway.protocol !== "https:") return Response.json({ ok: false, error: "The browsing gateway requires HTTPS." }, { status: 503 });
+        const healthResponse = await fetch(new URL("/health", parsedGateway), { signal: AbortSignal.timeout(12000) });
+        if (!healthResponse.ok) return Response.json({ ok: false, error: "The browsing gateway is unavailable." }, { status: 503 });
+        const health = await healthResponse.json();
+        return Response.json({ ok: true, gatewayUrl, health });
       }
     }
     return await handleProxyRequest(req);
