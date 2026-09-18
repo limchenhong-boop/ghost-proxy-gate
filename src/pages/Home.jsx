@@ -9,7 +9,7 @@ import SettingsPanel from "@/components/SettingsPanel";
 import TabCloakPanel from "@/components/TabCloakPanel";
 import ThemePanel from "@/components/ThemePanel";
 import { Eye, Palette, X } from "lucide-react";
-import { base44 } from "@/api/base44Client";
+
 
 export default function Home() {
   const [view, setView] = useState("home");
@@ -18,6 +18,7 @@ export default function Home() {
   const [html, setHtml] = useState("");
   const [openDirectUrl, setOpenDirectUrl] = useState(null);
   const [translateUrl, setTranslateUrl] = useState(null);
+  const [translateLoadId, setTranslateLoadId] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [diag, setDiag] = useState(null);
@@ -104,52 +105,13 @@ export default function Home() {
   const navigate = useCallback(async (rawUrl, opts = {}) => {
     const url = normalizeQuery(rawUrl);
     if (!url) return;
-    const mode = opts.mode || "new";
     startLoad();
-    try {
-      const payload = { url, origin: window.location.origin };
-      if (opts.method && opts.method !== "GET") {
-        payload.method = opts.method;
-        payload.body = opts.body || "";
-        payload.contentType = opts.contentType || "application/x-www-form-urlencoded";
-      }
-      const res = await base44.functions.invoke("proxyFetch", payload);
-      const data = (res && res.data) || {};
-      if (data.error) throw new Error(data.error);
-      if (data.blocked) {
-        // Genuine anti-bot / block page — show a diagnostic; open-direct is a
-        // manual fallback, NOT an automatic bypass.
-        setOpenDirectUrl(data.finalUrl || url);
-        setError(data.error || "The site served an anti-bot or block page.");
-        setDiag({ url: data.finalUrl || url, status: data.status, note: "Blocked / anti-bot page" });
-        setHtml("");
-        setCurrentUrl(data.finalUrl || url);
-        setView("browse");
-        if (mode === "new") pushHistory(data.finalUrl || url);
-        return;
-      }
-      if (data.nonHtml) {
-        // Non-HTML resource (image/pdf) — opening directly is the correct behavior.
-        setOpenDirectUrl(data.finalUrl || url);
-        setHtml("");
-        setCurrentUrl(data.finalUrl || url);
-        setView("browse");
-        if (mode === "new") pushHistory(data.finalUrl || url);
-        return;
-      }
-      if (!data.html) throw new Error("Empty response from proxy");
-      setHtml(data.html);
-      setCurrentUrl(data.finalUrl || url);
-      setView("browse");
-      if (mode === "new") pushHistory(data.finalUrl || url);
-    } catch (e) {
-      setError(e.message || "Failed to load site");
-      setDiag({ url, note: "Proxy request failed" });
-      setCurrentUrl(url);
-      setView("browse");
-    } finally {
-      setLoading(false);
-    }
+    setHtml("");
+    setCurrentUrl(url);
+    setTranslateUrl("https://translate.google.com/translate?sl=auto&tl=en&u=" + encodeURIComponent(url));
+    setTranslateLoadId((id) => id + 1);
+    setView("browse");
+    if (!opts.mode || opts.mode === "new") pushHistory(url);
   }, [startLoad, pushHistory]);
 
   useEffect(() => {
@@ -218,18 +180,9 @@ export default function Home() {
     const u = openDirectUrl || currentUrl;
     if (u) window.open(u, "_blank", "noopener");
   };
-  const openViaTranslate = (u) => {
-    const url = u || openDirectUrl || currentUrl;
-    if (!url) return;
-    setLoading(true);
-    setError(null);
-    setDiag(null);
-    setTranslateUrl("https://translate.google.com/translate?sl=auto&tl=en&u=" + encodeURIComponent(url));
-    setHtml("");
-    setOpenDirectUrl(null);
-    setCurrentUrl(url);
-    setView("browse");
-    pushHistory(url);
+  const openViaTranslate = () => {
+    const url = openDirectUrl || currentUrl;
+    if (url) navigate(url, { mode: "reload" });
   };
 
   const applyTheme = (t) => {
@@ -297,6 +250,7 @@ export default function Home() {
         ) : (
           <div className="fixed inset-0 z-10 flex flex-col">
             <ProxyFrame
+              key={translateLoadId}
               currentUrl={currentUrl}
               html={html}
               openDirectUrl={openDirectUrl}
