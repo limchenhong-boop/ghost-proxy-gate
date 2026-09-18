@@ -255,46 +255,47 @@ async function handleProxyRequest(req: Request): Promise<Response> {
     let gotPage = false;
     let nonHtml = false;
 
-    // 1. Try a direct fetch first — fast and works for most sites.
+    // 1. Try the residential gateway first — consistent residential IP egress
+    //    bypasses anti-bot blocks on Google, YouTube, TikTok, etc.
     try {
-      const direct = await fetchDirect(parsed.href, sdkMethod, sdkBody, sdkContentType);
-      contentType = direct.contentType;
-      finalUrl = direct.finalUrl;
-      status = direct.status;
+      const page = await fetchViaGateway(parsed.href, sdkMethod, sdkBody, sdkContentType);
+      transport = "residential";
+      finalUrl = page.finalUrl || finalUrl;
+      contentType = page.contentType || contentType;
+      status = page.status;
       if (!/text\/html|application\/xhtml/i.test(contentType)) {
-        return Response.json({ ok: true, nonHtml: true, finalUrl, contentType, status, transport: "direct" });
+        return Response.json({ ok: true, nonHtml: true, finalUrl, contentType, status, transport });
       }
-      if (direct.status < 400 && !isBlockPage(direct.body)) {
-        htmlBody = direct.body;
+      if (page.status < 400 && !isBlockPage(page.body)) {
+        htmlBody = page.body;
         gotPage = true;
       }
     } catch (e) {
-      console.log("[proxyFetch] direct fetch failed:", e.message);
+      console.log("[proxyFetch] gateway fetch failed:", e.message);
     }
 
-    // 2. Fall back to the residential gateway for anti-bot sites or on direct failure.
+    // 2. Fall back to a direct fetch if the gateway is unavailable.
     if (!gotPage) {
       try {
-        const page = await fetchViaGateway(parsed.href, sdkMethod, sdkBody, sdkContentType);
-        transport = "residential";
-        finalUrl = page.finalUrl || finalUrl;
-        contentType = page.contentType || contentType;
-        status = page.status;
+        const direct = await fetchDirect(parsed.href, sdkMethod, sdkBody, sdkContentType);
+        transport = "direct";
+        contentType = direct.contentType;
+        finalUrl = direct.finalUrl;
+        status = direct.status;
         if (!/text\/html|application\/xhtml/i.test(contentType)) {
           return Response.json({ ok: true, nonHtml: true, finalUrl, contentType, status, transport });
         }
-        if (page.status >= 400 || isBlockPage(page.body)) {
-          return Response.json({ ok: false, blocked: true, error: "The website refused the proxy request (HTTP " + page.status + ").", finalUrl, status: page.status, transport });
+        if (direct.status < 400 && !isBlockPage(direct.body)) {
+          htmlBody = direct.body;
+          gotPage = true;
         }
-        htmlBody = page.body;
-        gotPage = true;
       } catch (e) {
-        console.log("[proxyFetch] gateway fetch failed:", e.message);
+        console.log("[proxyFetch] direct fetch failed:", e.message);
       }
     }
 
     if (!gotPage) {
-      return Response.json({ ok: false, error: "Neither a direct connection nor the residential gateway could load this page. Try opening it directly or via Google Translate.", finalUrl, status, transport });
+      return Response.json({ ok: false, error: "The residential gateway and direct connection both failed to load this page.", finalUrl, status, transport });
     }
     return Response.json({ ok: true, html: inject(htmlBody, finalUrl, clientOrigin), finalUrl, contentType, status, transport });
   }
