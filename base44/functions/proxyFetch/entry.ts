@@ -73,6 +73,55 @@ async function fetchRawViaGateway(target, req) {
   }, 60000);
 }
 
+// ---- Direct fetch from the Base44 runtime (Cloudflare Workers) ----
+// Works for most sites without the residential gateway. The gateway is only
+// needed for anti-bot-protected sites (Google, YouTube, TikTok, etc.), so we
+// try direct first and fall back to the gateway when direct is blocked/fails.
+
+function directHeaders(target: string): Record<string, string> {
+  let origin = target;
+  try { origin = new URL(target).origin + "/"; } catch {}
+  return {
+    "user-agent": UA,
+    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.8",
+    "accept-language": "en-US,en;q=0.9",
+    "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest": "document",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-site": "none",
+    "sec-fetch-user": "?1",
+    "referer": origin,
+  };
+}
+
+async function fetchDirect(target: string, method: string, body?: string, contentType?: string) {
+  const headers = directHeaders(target);
+  if (method === "POST" && contentType) headers["content-type"] = contentType;
+  const opts: any = { method, headers, redirect: "follow", signal: AbortSignal.timeout(15000) };
+  if (!["GET", "HEAD"].includes(method) && body != null) opts.body = body;
+  const r = await fetch(target, opts);
+  const ct = r.headers.get("content-type") || "";
+  const finalUrl = r.url || target;
+  const buf = await r.arrayBuffer();
+  const isText = /^(text\/|application\/(json|javascript|x-javascript|xml|xhtml\+xml))/i.test(ct) || !ct;
+  const textBody = isText ? new TextDecoder("utf-8").decode(buf) : "";
+  return { ok: true, status: r.status, contentType: ct, finalUrl, body: textBody, isText };
+}
+
+async function fetchRawDirect(target: string, req: Request) {
+  const headers: Record<string, string> = { "user-agent": UA, "accept": "*/*" };
+  for (const name of ["range", "accept", "if-none-match", "if-modified-since"]) {
+    const value = req.headers.get(name);
+    if (value) headers[name] = value;
+  }
+  const method = req.method;
+  const opts: any = { method, headers, redirect: "follow", signal: AbortSignal.timeout(30000) };
+  if (!["GET", "HEAD"].includes(method)) opts.body = await req.arrayBuffer();
+  return fetch(target, opts);
+}
+
 const BLOCK_PATTERNS = [
   /\/sorry\/index/i,          // Google anti-bot
   /captcha/i,
@@ -148,21 +197,69 @@ async function handleProxyRequest(req: Request): Promise<Response> {
   }
 
   if (isSdk) {
-    const page = await fetchViaGateway(parsed.href, sdkMethod, sdkBody, sdkContentType);
-    const finalUrl = page.finalUrl || parsed.href;
-    const contentType = page.contentType || "";
-    if (!/text\/html|application\/xhtml/i.test(contentType)) {
-      return Response.json({ ok: true, nonHtml: true, finalUrl, contentType, status: page.status, transport: "residential" });
+    let htmlBody = "";
+    let finalUrl = parsed.href;
+    let contentType = "";
+    let status = 0;
+    let transport = "direct";
+    let gotPage = false;
+    let nonHtml = false;
+
+    // 1. Try a direct fetch first — fast and works for most sites.
+    try {
+      const direct = await fetchDirect(parsed.href, sdkMethod, sdkBody, sdkContentType);
+      contentType = direct.contentType;
+      finalUrl = direct.finalUrl;
+      status = direct.status;
+      if (!/text\/html|application\/xhtml/i.test(contentType)) {
+        return Response.json({ ok: true, nonHtml: true, finalUrl, contentType, status, transport: "direct" });
+      }
+      if (direct.status < 400 && !isBlockPage(direct.body)) {
+        htmlBody = direct.body;
+        gotPage = true;
+      }
+    } catch (e) {
+      console.log("[proxyFetch] direct fetch failed:", e.message);
     }
-    if (page.status >= 400 || isBlockPage(page.body)) {
-      return Response.json({ ok: false, blocked: true, error: "The website refused the residential proxy request (HTTP " + page.status + ").", finalUrl, status: page.status, transport: "residential" });
+
+    // 2. Fall back to the residential gateway for anti-bot sites or on direct failure.
+    if (!gotPage) {
+      try {
+        const page = await fetchViaGateway(parsed.href, sdkMethod, sdkBody, sdkContentType);
+        transport = "residential";
+        finalUrl = page.finalUrl || finalUrl;
+        contentType = page.contentType || contentType;
+        status = page.status;
+        if (!/text\/html|application\/xhtml/i.test(contentType)) {
+          return Response.json({ ok: true, nonHtml: true, finalUrl, contentType, status, transport });
+        }
+        if (page.status >= 400 || isBlockPage(page.body)) {
+          return Response.json({ ok: false, blocked: true, error: "The website refused the proxy request (HTTP " + page.status + ").", finalUrl, status: page.status, transport });
+        }
+        htmlBody = page.body;
+        gotPage = true;
+      } catch (e) {
+        console.log("[proxyFetch] gateway fetch failed:", e.message);
+      }
     }
-    return Response.json({ ok: true, html: inject(page.body, finalUrl, clientOrigin), finalUrl, contentType, status: page.status, transport: "residential" });
+
+    if (!gotPage) {
+      return Response.json({ ok: false, error: "Neither a direct connection nor the residential gateway could load this page. Try opening it directly or via Google Translate.", finalUrl, status, transport });
+    }
+    return Response.json({ ok: true, html: inject(htmlBody, finalUrl, clientOrigin), finalUrl, contentType, status, transport });
   }
 
-  const resp = await fetchRawViaGateway(parsed.href, req);
+  // Try direct fetch for sub-resources (fast, works for CDNs); fall back to gateway.
+  let resp: Response;
+  try {
+    resp = await fetchRawDirect(parsed.href, req);
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+  } catch (e) {
+    console.log("[proxyFetch] raw direct failed, trying gateway:", e.message);
+    resp = await fetchRawViaGateway(parsed.href, req);
+  }
   const contentType = resp.headers.get("content-type") || "";
-  const finalUrl = resp.headers.get("x-final-url") || parsed.href;
+  const finalUrl = resp.headers.get("x-final-url") || resp.url || parsed.href;
   const isHtml = contentType.includes("text/html") || contentType.includes("application/xhtml");
   const isCss = contentType.includes("text/css");
   // The public origin the browser used to reach us — passed explicitly by the
