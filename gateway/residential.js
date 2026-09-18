@@ -12,7 +12,13 @@
 //
 // Env:
 //   GATEWAY_API_KEY    shared secret with the Base44 function (required)
-//   RESIDENTIAL_PROXY  http(s) proxy URL, e.g. http://user:pass@host:port
+//   RESIDENTIAL_PROXY  one or more proxy endpoints, separated by newlines,
+//                      commas or spaces. Each may be written as
+//                        http://user:pass@host:port
+//                        user:pass@host:port
+//                        host:port:user:pass   (proxy-seller list format)
+//                      Requests are spread round-robin across all of them, so
+//                      pasting a whole 500-port list here is the intended use.
 //                      (when unset, requests go out directly)
 
 import { Readable } from "node:stream";
@@ -21,30 +27,53 @@ import { ProxyAgent, request as undiciRequest } from "undici";
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-let agent;
-let agentResolved = false;
+let agents;
+let cursor = 0;
 
-// Lazily build the ProxyAgent so a bad proxy URL can never crash boot.
-function proxyAgent() {
-  if (agentResolved) return agent;
-  agentResolved = true;
+// Normalize one list entry into an http:// proxy URL, or null if unusable.
+function toProxyUrl(entry) {
+  const s = entry.trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s)) return s;
+  const parts = s.split(":");
+  // host:port:user:pass (proxy-seller download format)
+  if (parts.length === 4 && /^\d+$/.test(parts[1])) {
+    return `http://${encodeURIComponent(parts[2])}:${encodeURIComponent(parts[3])}@${parts[0]}:${parts[1]}`;
+  }
+  // user:pass@host:port or host:port
+  if (s.includes("@") || parts.length === 2) return "http://" + s;
+  return null;
+}
+
+// Lazily build the agent pool so a bad entry can never crash boot.
+function proxyAgents() {
+  if (agents) return agents;
+  agents = [];
   const raw = (process.env.RESIDENTIAL_PROXY || "").trim();
   if (!raw) {
     console.warn("[residential] RESIDENTIAL_PROXY not set — egressing directly");
-    return (agent = undefined);
+    return agents;
   }
-  if (!/^https?:\/\//i.test(raw)) {
-    console.error("[residential] RESIDENTIAL_PROXY must be an http(s):// URL — egressing directly");
-    return (agent = undefined);
+  const seen = new Set();
+  for (const entry of raw.split(/[\s,]+/)) {
+    const url = toProxyUrl(entry);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    try {
+      agents.push(new ProxyAgent(url));
+    } catch (err) {
+      console.error("[residential] bad proxy entry skipped:", err.message);
+    }
   }
-  try {
-    agent = new ProxyAgent(raw);
-    console.log("[residential] proxy agent ready");
-  } catch (err) {
-    console.error("[residential] bad RESIDENTIAL_PROXY:", err.message);
-    agent = undefined;
-  }
-  return agent;
+  console.log(`[residential] ${agents.length} proxy endpoint(s) ready`);
+  return agents;
+}
+
+// Round-robin so concurrent sub-resource requests use different ports.
+function proxyAgent() {
+  const pool = proxyAgents();
+  if (!pool.length) return undefined;
+  return pool[cursor++ % pool.length];
 }
 
 function docHeaders(target) {

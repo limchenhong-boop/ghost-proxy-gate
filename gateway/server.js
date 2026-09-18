@@ -114,7 +114,7 @@ fastify.register(fastifyStatic, {
 fastify.get("/health", async () => ({
   ok: true,
   build: "scramjet-v5-residential",
-  residential: Boolean((process.env.RESIDENTIAL_PROXY || "").trim()),
+  residentialEndpoints: (process.env.RESIDENTIAL_PROXY || "").trim().split(/[\s,]+/).filter(Boolean).length,
 }));
 
 fastify.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
