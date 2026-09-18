@@ -16,11 +16,9 @@ export default function Home() {
   const [view, setView] = useState("home");
   const [query, setQuery] = useState("");
   const [currentUrl, setCurrentUrl] = useState("");
-  const [proxySrc, setProxySrc] = useState("");
+  const [srcDoc, setSrcDoc] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [gatewayUrl, setGatewayUrl] = useState("");
-  const [gatewayReady, setGatewayReady] = useState(false);
   const [history, setHistory] = useState([]);
   const [histIndex, setHistIndex] = useState(-1);
   const histIndexRef = useRef(-1);
@@ -35,26 +33,6 @@ export default function Home() {
   useEffect(() => {
     applyCloak(cloak);
   }, [cloak]);
-
-  // Fetch the gateway URL once on mount — it's a secret so the frontend
-  // can't access it directly; it goes through the proxyFetch config endpoint.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const response = await base44.functions.invoke("proxyFetch", { action: "config" });
-        if (cancelled) return;
-        const url = (response.data && response.data.gatewayUrl) || "";
-        if (!url) throw new Error("Gateway URL not configured.");
-        setGatewayUrl(url.replace(/\/$/, ""));
-        setGatewayReady(true);
-      } catch (e) {
-        if (cancelled) return;
-        setError("The proxy gateway is not configured. Set the GATEWAY_URL secret and deploy the Render gateway.");
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
 
   const [blurred, setBlurred] = useState(false);
   useEffect(() => {
@@ -81,46 +59,92 @@ export default function Home() {
     });
   }, []);
 
-  const navigate = useCallback((rawUrl, opts = {}) => {
+  // Core: load a page through the proxyFetch backend function (srcDoc approach).
+  // No cross-origin iframe — the HTML is fetched+rewritten server-side and
+  // injected via srcDoc, so Chrome never blocks it.
+  const loadPage = useCallback(async (rawUrl, opts = {}) => {
     const url = normalizeQuery(rawUrl);
     if (!url) return;
-    if (!gatewayReady) {
-      setError("The proxy gateway is not ready yet. Please wait a moment and try again.");
-      return;
-    }
     setLoading(true);
     setError(null);
     setCurrentUrl(url);
     setView("browse");
-    setProxySrc(gatewayUrl + "/proxy.html?url=" + encodeURIComponent(url));
     if (!opts.mode || opts.mode === "new") pushHistory(url);
-  }, [gatewayReady, gatewayUrl, pushHistory]);
+    try {
+      const payload = { url, origin: window.location.origin };
+      if (opts.method) payload.method = opts.method;
+      if (opts.body) payload.body = opts.body;
+      if (opts.contentType) payload.contentType = opts.contentType;
+      const response = await base44.functions.invoke("proxyFetch", payload);
+      const data = response.data;
+      if (!data || !data.ok) {
+        throw new Error(data?.error || "The proxy couldn't load this page.");
+      }
+      if (data.nonHtml) {
+        // Non-HTML response — open via the proxy endpoint in a new tab
+        const proxyUrl = window.location.origin + "/functions/proxyFetch?url=" + encodeURIComponent(data.finalUrl || url) + "&o=" + encodeURIComponent(window.location.origin);
+        window.open(proxyUrl, "_blank");
+        goHome();
+        return;
+      }
+      setSrcDoc(data.html);
+      if (data.finalUrl && data.finalUrl !== url) {
+        setCurrentUrl(data.finalUrl);
+        replaceHistory(data.finalUrl);
+      }
+    } catch (e) {
+      setError(e.message || "Failed to load page through the proxy.");
+    } finally {
+      setLoading(false);
+    }
+  }, [pushHistory, replaceHistory]);
+
+  // Listen for navigation messages from the srcDoc iframe's client interceptor
+  useEffect(() => {
+    const onMessage = (e) => {
+      const d = e.data;
+      if (!d || d.__vp !== 1) return;
+      if (d.formSubmit) {
+        const fs = d.formSubmit;
+        const body = fs.data.map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v)).join("&");
+        loadPage(fs.url, { mode: "replace", method: fs.method, body, contentType: "application/x-www-form-urlencoded" });
+      } else if (d.url) {
+        if (d.soft) {
+          // Soft navigation (pushState/replaceState/popstate) — just update URL bar
+          setCurrentUrl(d.url);
+          if (d.replace) replaceHistory(d.url);
+          else if (!d.pop) pushHistory(d.url);
+        } else {
+          // Hard navigation (link click) — load the new page
+          loadPage(d.url, { mode: "replace" });
+        }
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [loadPage, pushHistory, replaceHistory]);
+
+  const navigate = useCallback((rawUrl) => {
+    loadPage(rawUrl, { mode: "new" });
+  }, [loadPage]);
 
   const goBack = () => {
     const ni = histIndex - 1;
     if (ni >= 0) {
       setHistIndex(ni);
-      const url = history[ni];
-      setCurrentUrl(url);
-      setLoading(true);
-      setError(null);
-      setProxySrc(gatewayUrl + "/proxy.html?url=" + encodeURIComponent(url));
+      loadPage(history[ni], { mode: "replace" });
     }
   };
   const goForward = () => {
     const ni = histIndex + 1;
     if (ni < history.length) {
       setHistIndex(ni);
-      const url = history[ni];
-      setCurrentUrl(url);
-      setLoading(true);
-      setError(null);
-      setProxySrc(gatewayUrl + "/proxy.html?url=" + encodeURIComponent(url));
+      loadPage(history[ni], { mode: "replace" });
     }
   };
   const goHome = () => {
     setView("home");
-    setProxySrc("");
+    setSrcDoc("");
     setCurrentUrl("");
     setQuery("");
     setError(null);
@@ -130,12 +154,7 @@ export default function Home() {
     histIndexRef.current = -1;
   };
   const reload = () => {
-    if (currentUrl && gatewayUrl) {
-      setLoading(true);
-      setError(null);
-      // Force reload by changing the src (add a cache-busting param to proxy.html)
-      setProxySrc(gatewayUrl + "/proxy.html?url=" + encodeURIComponent(currentUrl) + "&t=" + Date.now());
-    }
+    if (currentUrl) loadPage(currentUrl, { mode: "replace" });
   };
   const openExternal = () => {
     const u = currentUrl;
@@ -211,10 +230,9 @@ export default function Home() {
           <div className="fixed inset-0 z-10 flex flex-col">
             <ProxyFrame
               currentUrl={currentUrl}
-              proxySrc={proxySrc}
+              srcDoc={srcDoc}
               loading={loading}
               error={error}
-              gatewayReady={gatewayReady}
               histIndex={histIndex}
               histLen={history.length}
               onBack={goBack}

@@ -3,10 +3,9 @@ import { ArrowLeft, ArrowRight, RotateCw, Home, ExternalLink, Lock, Loader2, Ale
 
 export default function ProxyFrame({
   currentUrl,
-  proxySrc,
+  srcDoc,
   loading,
   error,
-  gatewayReady,
   histIndex,
   histLen,
   onBack,
@@ -69,9 +68,10 @@ export default function ProxyFrame({
 
       {/* viewport */}
       <div className="relative flex-1 bg-white">
-        {proxySrc && (
+        {srcDoc && (
           <iframe
-            src={proxySrc}
+            srcDoc={srcDoc}
+            sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads"
             className="w-full h-full block"
             title="Ghost Proxy"
             referrerPolicy="no-referrer"
@@ -84,20 +84,11 @@ export default function ProxyFrame({
             <span className="text-white/70 text-sm font-medium">Tunneling through Ghost…</span>
           </div>
         )}
-        {!gatewayReady && !error && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3" style={{ background: "color-mix(in srgb, var(--vp-bg) 88%, black)" }}>
-            <Loader2 className="w-8 h-8 animate-spin" style={{ color: "var(--vp-accent)" }} />
-            <span className="text-white/70 text-sm font-medium">Connecting to proxy gateway…</span>
-          </div>
-        )}
         {error && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center" style={{ background: "color-mix(in srgb, var(--vp-bg) 88%, black)" }}>
             <AlertTriangle className="w-10 h-10" style={{ color: "var(--vp-accent2)" }} />
             <p className="text-white font-semibold">Proxy couldn't load this page</p>
             <p className="text-white/60 text-sm max-w-md">{error}</p>
-            <p className="text-white/40 text-xs max-w-md mt-1">
-              Make sure the Render gateway is deployed and running the Scramjet stack.
-            </p>
             <div className="flex flex-wrap gap-2 mt-2 justify-center">
               <button
                 onClick={onReload}
