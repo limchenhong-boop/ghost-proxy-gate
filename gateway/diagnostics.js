@@ -1,0 +1,61 @@
+import { createHash, timingSafeEqual, randomUUID } from "node:crypto";
+import { client as wispClient } from "@mercuryworkshop/wisp-js/client";
+import { newSession } from "./upstream-pool.js";
+import diagnosticRequest from "./diagnostic-request.js";
+
+export const diagnosticSessions = new Map();
+let running = false;
+let lastRun = 0;
+function authorized(req) {
+  const token = req.headers.authorization || "";
+  if (!token.startsWith("Basic ") || !process.env.GATEWAY_API_KEY) return false;
+  const value = Buffer.from(token.slice(6), "base64").toString();
+  const digest = (s) => createHash("sha256").update(s).digest();
+  return timingSafeEqual(digest(value), digest(`admin:${process.env.GATEWAY_API_KEY}`));
+}
+export default async function diagnostics(fastify) {
+  fastify.addHook("onRequest", async (req, reply) => {
+    if (!req.url.startsWith("/diagnostics")) return;
+    reply.header("cache-control", "no-store");
+    if (!authorized(req)) return reply.header("WWW-Authenticate", 'Basic realm="Gateway developer diagnostics", charset="UTF-8"').code(401).send("Developer authentication required");
+  });
+  fastify.get("/diagnostics", (req, reply) => reply.sendFile("diagnostics.html"));
+  fastify.get("/diagnostics.js", (req, reply) => reply.sendFile("diagnostics.js"));
+  fastify.post("/diagnostics/run", async (req, reply) => {
+    if (running || Date.now() - lastRun < 30000) return reply.code(429).send({ error: "Wait 30 seconds between diagnostic runs." });
+    running = true; lastRun = Date.now();
+    const id = randomUUID();
+    const trace = { id, streams: [] };
+    const session = newSession();
+    const path = `/wisp/diagnostic-${id}/`;
+    diagnosticSessions.set(path, { session, trace });
+    let connection;
+    const results = { backend: "PASS", wisp: "FAIL", outboundTransport: "FAIL", upstreamProxy: "FAIL", destinationRequest: "FAIL", responseReceived: "FAIL", tests: [], trace };
+    try {
+      const address = fastify.server.address();
+      connection = new wispClient.ClientConnection(`ws://127.0.0.1:${address.port}${path}`);
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("WISP_HANDSHAKE_TIMEOUT")), 10000);
+        connection.onopen = () => { clearTimeout(timer); resolve(); };
+        connection.onerror = () => { clearTimeout(timer); reject(new Error("WISP_HANDSHAKE_FAILED")); };
+        connection.onclose = () => { clearTimeout(timer); reject(new Error("WISP_CLOSED")); };
+      });
+      results.wisp = "PASS";
+      results.tests.push(await diagnosticRequest(connection, "example.com"));
+      results.tests.push(await diagnosticRequest(connection, "api.ipify.org", "/?format=json"));
+      const selected = trace.streams.length === 2 && trace.streams.every((s) => s.upstream === session.upstream.id && s.transport === "http-connect");
+      results.outboundTransport = selected ? "PASS" : "FAIL";
+      results.upstreamProxy = selected && trace.streams.every((s) => s.connected && s.connectStatus === 200) ? "PASS" : "FAIL";
+      results.destinationRequest = results.tests.every((t) => t.tls && t.status >= 200 && t.status < 400 && !t.error) ? "PASS" : "FAIL";
+      results.responseReceived = results.tests.every((t) => t.responseReceived && t.bytes > 0) ? "PASS" : "FAIL";
+      results.note = "These requests traversed a local WebSocket, Wisp framing, the production socket adapter, upstream CONNECT, verified destination TLS, and returned through Wisp. Use the public WebSocket test below to check Render's external upgrade separately. This is not a JavaScript website render test.";
+    } catch (error) {
+      results.error = ["WISP_HANDSHAKE_TIMEOUT", "WISP_HANDSHAKE_FAILED", "WISP_CLOSED"].includes(error.message) ? error.message : "DIAGNOSTIC_FAILED";
+    } finally {
+      connection?.close();
+      diagnosticSessions.delete(path);
+      running = false;
+    }
+    return results;
+  });
+}

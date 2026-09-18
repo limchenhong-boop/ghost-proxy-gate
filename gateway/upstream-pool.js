@@ -8,9 +8,8 @@ export function upstreamPool() {
   const urls = entries.map((entry) => {
     const parts = entry.split(":");
     if (!/^https?:\/\//i.test(entry)) {
-      if (parts.length === 4 && /^\d+$/.test(parts[1])) entry = `${parts[0]}:${parts[1]}@INVALID`;
       // Keep the existing provider-list and user:pass@host:port formats.
-      if (entry.endsWith("@INVALID")) entry = `http://${encodeURIComponent(parts[2])}:${encodeURIComponent(parts[3])}@${parts[0]}:${parts[1]}`;
+      if (parts.length === 4 && /^\d+$/.test(parts[1]) && !entry.includes("@")) entry = `http://${encodeURIComponent(parts[2])}:${encodeURIComponent(parts[3])}@${parts[0]}:${parts[1]}`;
       else entry = "http://" + entry;
     }
     let url;

@@ -27,6 +27,12 @@ import fastifyStatic from "@fastify/static";
 import { server as wisp, logging } from "@mercuryworkshop/wisp-js/server";
 
 import residentialRoutes from "./residential.js";
+import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { upstreamPool, getSession, newSession, sessionCookie } from "./upstream-pool.js";
+import socketForSession from "./wisp-socket.js";
+import diagnostics, { diagnosticSessions } from "./diagnostics.js";
+import transportLogs from "./transport-logs.js";
 
 import { scramjetPath } from "@mercuryworkshop/scramjet/path";
 import { libcurlPath } from "@mercuryworkshop/libcurl-transport";
@@ -36,40 +42,48 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const publicPath = join(__dirname, "public");
 const PORT = parseInt(process.env.PORT || "8080", 10);
 
-// Silence wisp debug logs
-logging.set_level(logging.NONE);
-
-// Wisp configuration — direct HTTP requests (no residential proxy needed
-// for most sites; the Scramjet rewriter handles cookies, CSP, etc.)
+// Pin and verify the implementation whose TCPSocket contract we inspected.
+const installedWisp = JSON.parse(readFileSync(new URL("../../package.json", import.meta.resolve("@mercuryworkshop/wisp-js/server")), "utf8")).version;
+if (installedWisp !== "0.4.1") throw new Error("Expected wisp-js 0.4.1; reinstall the pinned gateway dependencies");
+if (!process.env.GATEWAY_API_KEY) throw new Error("GATEWAY_API_KEY is required for signed browsing sessions and developer diagnostics");
+upstreamPool(); // Fail closed before listening; never silently use direct egress.
+logging.set_level(logging.ERROR); // Custom transport diagnostics redact sensitive values.
 Object.assign(wisp.options, {
   allow_udp_streams: false,
-  dns_servers: ["1.1.1.1", "1.0.0.1"],
+  allow_private_ips: false,
+  allow_loopback_ips: false,
+  dns_method: "lookup",
+  dns_result_order: "ipv4first",
 });
 
 const fastify = Fastify({
   serverFactory: (handler) => {
     return createServer()
       .on("request", (req, res) => {
-        // COOP/COEP headers — required for SharedArrayBuffer (libcurl WASM).
-        // BUT: COOP "same-origin" on a cross-origin iframe causes Chrome to
-        // block it with ERR_BLOCKED_BY_RESPONSE. proxy.html is the only page
-        // loaded in a cross-origin iframe (from the Base44 app), so we skip
-        // COOP for it. COEP credentialless + CORP cross-origin stay so the
-        // iframe response is still embeddable and cross-origin resources load.
-        const isProxyPage = req.url === "/" || req.url === "/proxy.html" || req.url.startsWith("/proxy.html?");
-        if (!isProxyPage) {
-          res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
-          res.setHeader("Cross-Origin-Embedder-Policy", "credentialless");
+        // libcurl requires a top-level isolated gateway document. Do not embed
+        // proxy.html cross-origin and do not exempt it from these headers.
+        res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+        res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+        res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+        const pathname = new URL(req.url, "http://gateway.invalid").pathname;
+        if (["/", "/proxy.html", "/diagnostics"].includes(pathname)) {
+          const session = getSession(req) || newSession();
+          const secure = req.headers["x-forwarded-proto"] === "https" || Boolean(req.socket.encrypted);
+          res.setHeader("Set-Cookie", sessionCookie(session, secure));
+          res.setHeader("Cache-Control", "no-store");
         }
-        res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+        if (["/sw.js", "/config.js", "/proxy.js"].includes(pathname)) res.setHeader("Cache-Control", "no-store");
+        if (pathname === "/sw.js") res.setHeader("Service-Worker-Allowed", "/");
         handler(req, res);
       })
       .on("upgrade", (req, socket, head) => {
-        if (req.url.endsWith("/wisp/")) {
-          wisp.routeRequest(req, socket, head);
-        } else {
-          socket.end();
-        }
+        const diagnostic = diagnosticSessions.get(req.url);
+        if (req.url !== "/wisp/" && !diagnostic) { socket.destroy(); return; }
+        const session = diagnostic?.session || getSession(req) || newSession();
+        const trace = diagnostic?.trace || { id: randomUUID(), streams: [] };
+        // The FOURTH argument is the real wisp-js 0.4.1 connection option.
+        // Every TCP stream in this connection captures the SAME upstream.
+        wisp.routeRequest(req, socket, head, { TCPSocket: socketForSession(session, trace) });
       });
   },
 });
@@ -77,18 +91,23 @@ const fastify = Fastify({
 // Residential fetch endpoints (/fetch + /raw) used by the Base44 proxyFetch
 // function. Registered first so its body parser and auth hook are scoped here.
 fastify.register(residentialRoutes);
+fastify.register(diagnostics);
+fastify.register(transportLogs);
 
 // Serve our custom proxy page + service worker
 fastify.register(fastifyStatic, {
   root: publicPath,
   decorateReply: true,
+  serve: false, // Explicit routes prevent bypassing developer diagnostic auth.
 });
+fastify.get("/", (req, reply) => reply.sendFile("proxy.html"));
 
 // Explicit routes for critical proxy files (reliable fallback)
 fastify.get("/proxy.html", (req, reply) => reply.sendFile("proxy.html"));
 fastify.get("/proxy.js", (req, reply) => reply.sendFile("proxy.js"));
 fastify.get("/sw.js", (req, reply) => reply.sendFile("sw.js"));
-fastify.get("/config.js", (req, reply) => reply.sendFile("config.js"));
+fastify.get("/config.js", (req, reply) => reply.type("application/javascript").send(`self.GHOST_CONFIG = ${JSON.stringify({ prefix: "/service/", diagnostics: process.env.WISP_DIAGNOSTICS !== "0" })};`));
+fastify.get("/transport-diagnostics.js", (req, reply) => reply.sendFile("transport-diagnostics.js"));
 
 // Serve Scramjet core files at /scram/
 fastify.register(fastifyStatic, {
@@ -113,8 +132,11 @@ fastify.register(fastifyStatic, {
 
 fastify.get("/health", async () => ({
   ok: true,
-  build: "scramjet-v5-residential",
-  residentialEndpoints: (process.env.RESIDENTIAL_PROXY || "").trim().split(/[\s,]+/).filter(Boolean).length,
+  build: "scramjet-v6-wisp-connect",
+  wispVersion: installedWisp,
+  transport: "http-connect",
+  directFallback: false,
+  residentialEndpoints: upstreamPool().length,
 }));
 
 fastify.listen({ port: PORT, host: "0.0.0.0" }, (err) => {

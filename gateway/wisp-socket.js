@@ -16,7 +16,7 @@ export default function socketForSession(session, trace) {
       if (trace.streams.length > 200) trace.streams.shift();
     }
     log(label, extra = {}) {
-      if (process.env.WISP_DIAGNOSTICS === "1" || label === "WISP ERROR") console.log(`[${label}]`, JSON.stringify({ connection: trace.id, ...this.report, ...extra }));
+      if (process.env.WISP_DIAGNOSTICS !== "0" || label === "WISP ERROR") console.log(`[${label}]`, JSON.stringify({ connection: trace.id, session: session.cookie.split(".")[0], ...this.report, ...extra }));
     }
     async connect() {
       this.log("WISP REQUEST");
