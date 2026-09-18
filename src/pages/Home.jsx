@@ -8,19 +8,22 @@ import SettingsPanel from "@/components/SettingsPanel";
 import TabCloakPanel from "@/components/TabCloakPanel";
 import ThemePanel from "@/components/ThemePanel";
 import UpdatePopup from "@/components/UpdatePopup";
-import { Eye, Palette, X, ExternalLink, Check } from "lucide-react";
+import ProxyFrame from "@/components/ProxyFrame";
+import { Eye, Palette, X, ArrowLeft } from "lucide-react";
 import { base44 } from "@/api/base44Client";
 
 
 export default function Home() {
   const [query, setQuery] = useState("");
+  const [view, setView] = useState("home");
+  const [currentUrl, setCurrentUrl] = useState("");
+  const [srcDoc, setSrcDoc] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [panel, setPanel] = useState(null);
   const [cloak, setCloak] = useState(loadCloak);
   const [theme, setTheme] = useState(loadTheme);
-  const [gatewayUrl, setGatewayUrl] = useState("");
-  const [toast, setToast] = useState(null);
+  const [history, setHistoryStack] = useState([]);
 
   useEffect(() => { applyCloak(cloak); }, [cloak]);
 
@@ -31,43 +34,83 @@ export default function Home() {
     return () => document.removeEventListener("visibilitychange", onVis);
   }, []);
 
-  // Resolve the Scramjet gateway URL once (it's a secret, so the frontend asks
-  // the proxyFetch function for it via the "config" action).
-  const ensureGateway = useCallback(async () => {
-    if (gatewayUrl) return gatewayUrl;
-    const response = await base44.functions.invoke("proxyFetch", { action: "config" });
-    const url = response.data?.gatewayUrl;
-    if (!url) throw new Error("The proxy gateway is not configured.");
-    setGatewayUrl(url);
-    return url;
-  }, [gatewayUrl]);
+  const pushHistory = useCallback((url) => {
+    setHistoryStack((h) => [...h, url]);
+  }, []);
+  const replaceHistory = useCallback((url) => {
+    setHistoryStack((h) => (h.length ? [...h.slice(0, -1), url] : [url]));
+  }, []);
 
-  // Open the gateway proxy page as a top-level document. Scramjet needs
-  // cross-origin isolation (COOP/COEP) for its WASM transport, which a
-  // cross-origin iframe can't get — Chrome blocks embedded attempts with
-  // ERR_BLOCKED_BY_RESPONSE. A top-level (new tab) page works fully.
-  const navigate = useCallback(async (rawUrl) => {
+  const goHome = useCallback(() => {
+    setView("home");
+    setSrcDoc("");
+    setCurrentUrl("");
+    setError(null);
+    setHistoryStack([]);
+  }, []);
+
+  // Core: load a page through the proxyFetch backend function (srcDoc approach).
+  // The proxied HTML is fetched+rewritten server-side and injected via srcDoc,
+  // so the user's browser only ever talks to this app's own domain — never a
+  // separate backend host that networks/filters might block.
+  const loadPage = useCallback(async (rawUrl, opts = {}) => {
     const url = normalizeQuery(rawUrl);
     if (!url) return;
     setLoading(true);
     setError(null);
+    setCurrentUrl(url);
+    setView("browse");
+    if (!opts.mode || opts.mode === "new") pushHistory(url);
     try {
-      const gw = await ensureGateway();
-      const proxyPage = `${gw}/proxy.html?url=${encodeURIComponent(url)}`;
-      const win = window.open(proxyPage, "_blank", "noopener,noreferrer");
-      if (!win) {
-        // Popup blocked — navigate this tab instead.
-        window.location.href = proxyPage;
-      } else {
-        setToast({ url });
-        setTimeout(() => setToast(null), 4500);
+      const payload = { url, origin: window.location.origin };
+      if (opts.method) payload.method = opts.method;
+      if (opts.body) payload.body = opts.body;
+      if (opts.contentType) payload.contentType = opts.contentType;
+      const response = await base44.functions.invoke("proxyFetch", payload);
+      const data = response.data;
+      if (!data || !data.ok) {
+        throw new Error(data?.error || "The proxy couldn't load this page.");
+      }
+      if (data.nonHtml) {
+        const proxyUrl = window.location.origin + "/functions/proxyFetch?url=" + encodeURIComponent(data.finalUrl || url) + "&o=" + encodeURIComponent(window.location.origin);
+        window.open(proxyUrl, "_blank");
+        goHome();
+        return;
+      }
+      setSrcDoc(data.html);
+      if (data.finalUrl && data.finalUrl !== url) {
+        setCurrentUrl(data.finalUrl);
+        replaceHistory(data.finalUrl);
       }
     } catch (e) {
-      setError(e.message || "Failed to open the proxy.");
+      setError(e.message || "Failed to load page through the proxy.");
     } finally {
       setLoading(false);
     }
-  }, [ensureGateway]);
+  }, [pushHistory, replaceHistory, goHome]);
+
+  // Listen for navigation messages from the srcDoc iframe's client interceptor
+  useEffect(() => {
+    const onMessage = (e) => {
+      const d = e.data;
+      if (!d || d.__vp !== 1) return;
+      if (d.formSubmit) {
+        const fs = d.formSubmit;
+        const body = fs.data.map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v)).join("&");
+        loadPage(fs.url, { mode: "replace", method: fs.method, body, contentType: "application/x-www-form-urlencoded" });
+      } else if (d.url) {
+        if (d.soft) {
+          setCurrentUrl(d.url);
+          if (d.replace) replaceHistory(d.url);
+          else if (!d.pop) pushHistory(d.url);
+        } else {
+          loadPage(d.url, { mode: "replace" });
+        }
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [loadPage, pushHistory, replaceHistory]);
 
   const applyTheme = (t) => { setTheme(t); saveTheme(t.id); };
   const applyCloakPreset = (c) => { setCloak(c); saveCloak(c); };
@@ -79,6 +122,28 @@ export default function Home() {
     "--vp-accent2": theme.accent2,
     background: `radial-gradient(circle at 50% 0%, ${theme.bg2}, ${theme.bg} 60%)`,
   };
+
+  if (view === "browse") {
+    return (
+      <div className="h-screen w-full text-white overflow-hidden" style={rootStyle}>
+        <ProxyFrame
+          currentUrl={currentUrl}
+          srcDoc={srcDoc}
+          loading={loading}
+          error={error}
+          onLoaded={() => setLoading(false)}
+        />
+        <button
+          onClick={goHome}
+          className="fixed top-3 left-3 z-20 vp-pill vp-glass"
+          style={{ background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.1)" }}
+        >
+          <ArrowLeft className="w-4 h-4" />
+          <span className="text-sm font-medium">Home</span>
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen w-full flex flex-col text-white overflow-hidden" style={rootStyle}>
@@ -112,11 +177,11 @@ export default function Home() {
         <div className="flex-1 flex flex-col items-center justify-center gap-8 px-4 sm:px-6 py-8 overflow-y-auto">
           <h1 className="ghost-word text-7xl sm:text-8xl vp-fade-up">ghost</h1>
           <div className="w-full max-w-xl vp-fade-up" style={{ animationDelay: "0.08s" }}>
-            <VelocitySearch value={query} onChange={setQuery} onSubmit={() => navigate(query)} loading={loading} />
+            <VelocitySearch value={query} onChange={setQuery} onSubmit={() => loadPage(query)} loading={loading} />
             {error && <p className="text-center text-red-300/80 text-xs mt-3">{error}</p>}
           </div>
           <div className="w-full vp-fade-up" style={{ animationDelay: "0.16s" }}>
-            <QuickApps onOpen={navigate} />
+            <QuickApps onOpen={loadPage} />
           </div>
         </div>
       </main>
@@ -144,25 +209,6 @@ export default function Home() {
       )}
 
       <AppFooter onSettings={() => setPanel("settings")} />
-
-      {toast && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[120] vp-glass vp-fade-up rounded-full px-4 py-2.5 flex items-center gap-2.5"
-          style={{ background: "color-mix(in srgb, var(--vp-bg) 85%, black)", border: "1px solid rgba(255,255,255,0.1)" }}>
-          <span className="w-5 h-5 rounded-full flex items-center justify-center" style={{ background: "var(--vp-accent)" }}>
-            <Check className="w-3 h-3 text-white" />
-          </span>
-          <span className="text-sm text-white/80">Opened in a new tab</span>
-          <a
-            href={`${gatewayUrl}/proxy.html?url=${encodeURIComponent(toast.url)}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-white/50 hover:text-white inline-flex items-center gap-1"
-            title="Reopen"
-          >
-            <ExternalLink className="w-3.5 h-3.5" />
-          </a>
-        </div>
-      )}
 
       {blurred && (
         <div
