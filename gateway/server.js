@@ -1,7 +1,7 @@
 // Ghost Proxy Gateway — Scramjet interception proxy
 //
 // Serves the Scramjet static files, a Wisp WebSocket transport, and a custom
-// proxy page that the Base44 app embeds in an iframe. The service worker
+// top-level isolated proxy page launched by the Base44 app. The service worker
 // (registered by the proxy page) intercepts all requests from the proxied
 // site and routes them through the Wisp server, giving full SPA support
 // (YouTube, TikTok, etc.) that the old srcDoc approach couldn't match.
@@ -130,14 +130,18 @@ fastify.register(fastifyStatic, {
   decorateReply: false,
 });
 
-fastify.get("/health", async () => ({
+fastify.get("/health", async (req, reply) => {
+  reply.header("access-control-allow-origin", "*");
+  reply.header("cache-control", "no-store");
+  return ({
   ok: true,
   build: "scramjet-v6-wisp-connect",
   wispVersion: installedWisp,
   transport: "http-connect",
   directFallback: false,
   residentialEndpoints: upstreamPool().length,
-}));
+  });
+});
 
 fastify.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
   if (err) {

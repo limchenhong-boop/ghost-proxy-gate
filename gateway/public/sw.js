@@ -2,15 +2,27 @@ importScripts("/config.js", "/scram/scramjet.all.js", "/transport-diagnostics.js
 
 const { ScramjetServiceWorker } = $scramjetLoadWorker();
 const scramjet = new ScramjetServiceWorker();
+// In v1.1.0 the built-in config message only assigns this.config. Reload from
+// IndexedDB so loadConfig also sets shared codecs/config and initializes WASM.
+let configReady;
+self.addEventListener("message", ({ data }) => {
+  if (data?.scramjet$type === "loadConfig") { scramjet.config = undefined; configReady = undefined; }
+});
 if (self.GHOST_CONFIG?.diagnostics) attachTransportDiagnostics(scramjet);
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
 async function handleRequest(event) {
-  await scramjet.loadConfig();
+  if (!configReady) configReady = scramjet.loadConfig();
+  await configReady;
   if (scramjet.config && scramjet.route(event)) {
     const response = await scramjet.fetch(event);
-    if (response.status >= 500) console.warn("[Scramjet transport] Request failed", { method: event.request.method, status: response.status, destination: event.request.destination });
+    if (response.status >= 500) {
+      try {
+        const target = new URL(decodeURIComponent(new URL(event.request.url).pathname.slice(self.GHOST_CONFIG.prefix.length)));
+        reportTransport({ ...destinationMeta(target), method: event.request.method, status: response.status, stage: "error", error: "SCRAMJET_RESPONSE_ERROR" });
+      } catch { /* Never log the encoded URL or its query tokens. */ }
+    }
     return response;
   }
   const url = new URL(event.request.url);

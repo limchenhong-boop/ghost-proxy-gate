@@ -29,8 +29,8 @@ function attachTransportDiagnostics(scramjet) {
         transform(chunk, controller) { bytes += chunk.byteLength ?? new TextEncoder().encode(String(chunk)).length; controller.enqueue(chunk); },
         flush() { reportTransport({ ...meta, stage: "response-end", bytes }); },
       }));
-    } else if (body != null) {
-      const bytes = typeof body === "string" ? new TextEncoder().encode(body).length : body.byteLength ?? body.size;
+    } else {
+      const bytes = body == null ? 0 : typeof body === "string" ? new TextEncoder().encode(body).length : body.byteLength ?? body.size;
       reportTransport({ ...meta, stage: "response-end", bytes });
     }
   });

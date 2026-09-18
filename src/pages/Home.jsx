@@ -17,13 +17,13 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [view, setView] = useState("home");
   const [currentUrl, setCurrentUrl] = useState("");
-  const [srcDoc, setSrcDoc] = useState("");
+  const [gatewayPage, setGatewayPage] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [panel, setPanel] = useState(null);
   const [cloak, setCloak] = useState(loadCloak);
   const [theme, setTheme] = useState(loadTheme);
-  const [history, setHistoryStack] = useState([]);
+
 
   useEffect(() => { applyCloak(cloak); }, [cloak]);
 
@@ -34,83 +34,52 @@ export default function Home() {
     return () => document.removeEventListener("visibilitychange", onVis);
   }, []);
 
-  const pushHistory = useCallback((url) => {
-    setHistoryStack((h) => [...h, url]);
-  }, []);
-  const replaceHistory = useCallback((url) => {
-    setHistoryStack((h) => (h.length ? [...h.slice(0, -1), url] : [url]));
-  }, []);
-
   const goHome = useCallback(() => {
     setView("home");
-    setSrcDoc("");
+    setGatewayPage("");
     setCurrentUrl("");
     setError(null);
-    setHistoryStack([]);
+    setLoading(false);
   }, []);
 
-  // Core: load a page through the proxyFetch backend function (srcDoc approach).
-  // The proxied HTML is fetched+rewritten server-side and injected via srcDoc,
-  // so the user's browser only ever talks to this app's own domain — never a
-  // separate backend host that networks/filters might block.
-  const loadPage = useCallback(async (rawUrl, opts = {}) => {
+  // The Base44 UI launches the actual isolated Scramjet gateway. No HTML
+  // fetch/srcDoc fallback: all website traffic belongs to Scramjet and Wisp.
+  const loadPage = useCallback(async (rawUrl) => {
     const url = normalizeQuery(rawUrl);
     if (!url) return;
     setLoading(true);
     setError(null);
+    setGatewayPage("");
     setCurrentUrl(url);
     setView("browse");
-    if (!opts.mode || opts.mode === "new") pushHistory(url);
     try {
-      const payload = { url, origin: window.location.origin };
-      if (opts.method) payload.method = opts.method;
-      if (opts.body) payload.body = opts.body;
-      if (opts.contentType) payload.contentType = opts.contentType;
-      const response = await base44.functions.invoke("proxyFetch", payload);
-      const data = response.data;
-      if (!data || !data.ok) {
-        throw new Error(data?.error || "The proxy couldn't load this page.");
+      const response = await base44.functions.invoke("proxyFetch", { action: "config" });
+      if (!response.data?.gatewayUrl) throw new Error("The browsing gateway is not configured.");
+      const gateway = new URL(response.data.gatewayUrl);
+      if (gateway.protocol !== "https:") throw new Error("The browsing gateway requires an HTTPS address.");
+      const healthResponse = await fetch(new URL("/health", gateway), { credentials: "omit", signal: AbortSignal.timeout(12000) });
+      if (!healthResponse.ok) throw new Error("The browsing gateway is unavailable.");
+      const health = await healthResponse.json();
+      if (health.build !== "scramjet-v6-wisp-connect" || health.wispVersion !== "0.4.1" || health.directFallback !== false) {
+        throw new Error("The repaired Wisp gateway has not been deployed yet. Browsing is paused rather than using the old broken request flow.");
       }
-      if (data.nonHtml) {
-        const proxyUrl = window.location.origin + "/functions/proxyFetch?url=" + encodeURIComponent(data.finalUrl || url) + "&o=" + encodeURIComponent(window.location.origin);
-        window.open(proxyUrl, "_blank");
-        goHome();
-        return;
+      const page = new URL("/proxy.html", gateway);
+      page.searchParams.set("url", url);
+      page.searchParams.set("return", window.location.origin + window.location.pathname);
+      setGatewayPage(page.href);
+      if (window.top !== window.self) {
+        setError("This embedded view cannot provide the browser isolation Scramjet needs. Open browsing in its own tab below.");
+      } else {
+        window.location.assign(page.href);
       }
-      setSrcDoc(data.html);
-      if (data.finalUrl && data.finalUrl !== url) {
-        setCurrentUrl(data.finalUrl);
-        replaceHistory(data.finalUrl);
-      }
-    } catch (e) {
-      setError(e.message || "Failed to load page through the proxy.");
+    } catch (failure) {
+      setError(failure.name === "TypeError" || failure.name === "TimeoutError"
+        ? "The browsing gateway could not be reached. It may be offline or blocked by your network; a reachable, approved gateway address is required. No direct-site fallback was used."
+        : failure.message || "The browsing gateway could not be opened.");
     } finally {
       setLoading(false);
     }
-  }, [pushHistory, replaceHistory, goHome]);
-
-  // Listen for navigation messages from the srcDoc iframe's client interceptor
-  useEffect(() => {
-    const onMessage = (e) => {
-      const d = e.data;
-      if (!d || d.__vp !== 1) return;
-      if (d.formSubmit) {
-        const fs = d.formSubmit;
-        const body = fs.data.map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v)).join("&");
-        loadPage(fs.url, { mode: "replace", method: fs.method, body, contentType: "application/x-www-form-urlencoded" });
-      } else if (d.url) {
-        if (d.soft) {
-          setCurrentUrl(d.url);
-          if (d.replace) replaceHistory(d.url);
-          else if (!d.pop) pushHistory(d.url);
-        } else {
-          loadPage(d.url, { mode: "replace" });
-        }
-      }
-    };
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [loadPage, pushHistory, replaceHistory]);
+  }, []);
 
   const applyTheme = (t) => { setTheme(t); saveTheme(t.id); };
   const applyCloakPreset = (c) => { setCloak(c); saveCloak(c); };
@@ -128,10 +97,9 @@ export default function Home() {
       <div className="h-screen w-full text-white overflow-hidden" style={rootStyle}>
         <ProxyFrame
           currentUrl={currentUrl}
-          srcDoc={srcDoc}
+          gatewayPage={gatewayPage}
           loading={loading}
           error={error}
-          onLoaded={() => setLoading(false)}
         />
         <button
           onClick={goHome}
