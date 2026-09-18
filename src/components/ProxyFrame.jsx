@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from "react";
-import { ArrowLeft, ArrowRight, RotateCw, Home, ExternalLink, AlertTriangle, Loader2, Lock, Globe } from "lucide-react";
+import { ArrowLeft, ArrowRight, RotateCw, Home, ExternalLink, AlertTriangle, Loader2, Lock, Globe, Languages } from "lucide-react";
 
 export default function ProxyFrame({
   currentUrl,
   html,
   openDirectUrl,
+  translateUrl,
   loading,
   error,
   diag,
@@ -16,6 +17,7 @@ export default function ProxyFrame({
   onHome,
   onNavigate,
   onOpenExternal,
+  onOpenTranslate,
   onLoaded,
 }) {
   const [urlInput, setUrlInput] = useState(currentUrl);
@@ -71,7 +73,7 @@ export default function ProxyFrame({
       {/* viewport */}
       <div className="relative flex-1 bg-white">
         <iframe
-          srcDoc={html}
+          {...(translateUrl ? { src: translateUrl } : { srcDoc: html })}
           // allow-scripts: site JS must execute (srcDoc has no CSP).
           // allow-forms: forms submit through the proxy.
           // allow-popups: window.open is intercepted to stay in-proxy.
@@ -102,13 +104,21 @@ export default function ProxyFrame({
             <p className="text-white/40 text-xs max-w-md">
               {diag && diag.note ? diag.note : "The site served a non-HTML file or a block page that can't be rendered inside the proxy."}
             </p>
-            <button
-              onClick={onOpenExternal}
-              className="mt-2 px-4 py-2 rounded-full text-sm font-semibold text-white inline-flex items-center gap-2"
-              style={{ background: "linear-gradient(135deg, var(--vp-accent), var(--vp-accent2))" }}
-            >
-              <ExternalLink className="w-4 h-4" /> Open directly
-            </button>
+            <div className="flex flex-wrap gap-2 justify-center mt-2">
+              <button
+                onClick={onOpenTranslate}
+                className="px-4 py-2 rounded-full text-sm font-semibold text-white inline-flex items-center gap-2"
+                style={{ background: "linear-gradient(135deg, var(--vp-accent), var(--vp-accent2))" }}
+              >
+                <Languages className="w-4 h-4" /> View via Google Translate
+              </button>
+              <button
+                onClick={onOpenExternal}
+                className="px-4 py-2 rounded-full text-sm font-semibold text-white/80 border border-white/15 inline-flex items-center gap-2"
+              >
+                <ExternalLink className="w-4 h-4" /> Open directly
+              </button>
+            </div>
           </div>
         )}
         {error && !loading && !openDirectUrl && (
@@ -126,13 +136,20 @@ export default function ProxyFrame({
             <p className="text-white/40 text-xs max-w-md mt-1">
               You can retry, go home, or open the original site directly as a last resort.
             </p>
-            <div className="flex gap-2 mt-2">
+            <div className="flex flex-wrap gap-2 mt-2 justify-center">
               <button
                 onClick={onReload}
                 className="px-4 py-2 rounded-full text-sm font-semibold text-white"
                 style={{ background: "linear-gradient(135deg, var(--vp-accent), var(--vp-accent2))" }}
               >
                 Retry
+              </button>
+              <button
+                onClick={onOpenTranslate}
+                className="px-4 py-2 rounded-full text-sm font-semibold text-white inline-flex items-center gap-2"
+                style={{ background: "linear-gradient(135deg, var(--vp-accent), var(--vp-accent2))" }}
+              >
+                <Languages className="w-4 h-4" /> View via Google Translate
               </button>
               <button
                 onClick={onOpenExternal}

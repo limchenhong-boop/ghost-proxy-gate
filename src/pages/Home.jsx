@@ -17,6 +17,7 @@ export default function Home() {
   const [currentUrl, setCurrentUrl] = useState("");
   const [html, setHtml] = useState("");
   const [openDirectUrl, setOpenDirectUrl] = useState(null);
+  const [translateUrl, setTranslateUrl] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [diag, setDiag] = useState(null);
@@ -48,6 +49,7 @@ export default function Home() {
     setLoading(true);
     setError(null);
     setOpenDirectUrl(null);
+    setTranslateUrl(null);
     setDiag(null);
     if (loadTimer.current) clearTimeout(loadTimer.current);
     loadTimer.current = setTimeout(() => {
@@ -200,6 +202,7 @@ export default function Home() {
     setView("home");
     setHtml("");
     setOpenDirectUrl(null);
+    setTranslateUrl(null);
     setCurrentUrl("");
     setQuery("");
     setError(null);
@@ -214,6 +217,19 @@ export default function Home() {
   const openExternal = () => {
     const u = openDirectUrl || currentUrl;
     if (u) window.open(u, "_blank", "noopener");
+  };
+  const openViaTranslate = (u) => {
+    const url = u || openDirectUrl || currentUrl;
+    if (!url) return;
+    setLoading(true);
+    setError(null);
+    setDiag(null);
+    setTranslateUrl("https://translate.google.com/translate?sl=auto&tl=en&u=" + encodeURIComponent(url));
+    setHtml("");
+    setOpenDirectUrl(null);
+    setCurrentUrl(url);
+    setView("browse");
+    pushHistory(url);
   };
 
   const applyTheme = (t) => {
@@ -284,6 +300,7 @@ export default function Home() {
               currentUrl={currentUrl}
               html={html}
               openDirectUrl={openDirectUrl}
+              translateUrl={translateUrl}
               loading={loading}
               error={error}
               diag={diag}
@@ -295,6 +312,7 @@ export default function Home() {
               onHome={goHome}
               onNavigate={(u) => navigate(u)}
               onOpenExternal={openExternal}
+              onOpenTranslate={openViaTranslate}
               onLoaded={onLoaded}
             />
           </div>
