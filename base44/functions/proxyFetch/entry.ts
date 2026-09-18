@@ -111,7 +111,17 @@ async function fetchDirect(target: string, method: string, body?: string, conten
 }
 
 async function fetchRawDirect(target: string, req: Request) {
-  const headers: Record<string, string> = { "user-agent": UA, "accept": "*/*" };
+  let referer = target;
+  try { referer = new URL(target).origin + "/"; } catch {}
+  const headers: Record<string, string> = {
+    "user-agent": UA,
+    "accept": "*/*",
+    "accept-language": "en-US,en;q=0.9",
+    "referer": referer,
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
+  };
   for (const name of ["range", "accept", "if-none-match", "if-modified-since"]) {
     const value = req.headers.get(name);
     if (value) headers[name] = value;
@@ -249,14 +259,19 @@ async function handleProxyRequest(req: Request): Promise<Response> {
     return Response.json({ ok: true, html: inject(htmlBody, finalUrl, clientOrigin), finalUrl, contentType, status, transport });
   }
 
-  // Try direct fetch for sub-resources (fast, works for CDNs); fall back to gateway.
+  // Try direct fetch for sub-resources (fast, works for CDNs). Only fall back
+  // to the gateway on an actual network error — a non-200 status (403, 404)
+  // is still served as-is so the browser gets the real response code.
   let resp: Response;
   try {
     resp = await fetchRawDirect(parsed.href, req);
-    if (!resp.ok) throw new Error("HTTP " + resp.status);
   } catch (e) {
     console.log("[proxyFetch] raw direct failed, trying gateway:", e.message);
-    resp = await fetchRawViaGateway(parsed.href, req);
+    try {
+      resp = await fetchRawViaGateway(parsed.href, req);
+    } catch (e2) {
+      return new Response("Sub-resource could not be loaded: " + e2.message, { status: 502, headers: { "content-type": "text/plain", ...corsHeaders(proxyOrigin) } });
+    }
   }
   const contentType = resp.headers.get("content-type") || "";
   const finalUrl = resp.headers.get("x-final-url") || resp.url || parsed.href;
