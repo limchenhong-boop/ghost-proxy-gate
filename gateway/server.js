@@ -26,6 +26,8 @@ import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { server as wisp, logging } from "@mercuryworkshop/wisp-js/server";
 
+import residentialRoutes from "./residential.js";
+
 import { scramjetPath } from "@mercuryworkshop/scramjet/path";
 import { libcurlPath } from "@mercuryworkshop/libcurl-transport";
 import { baremuxPath } from "@mercuryworkshop/bare-mux/node";
@@ -72,6 +74,10 @@ const fastify = Fastify({
   },
 });
 
+// Residential fetch endpoints (/fetch + /raw) used by the Base44 proxyFetch
+// function. Registered first so its body parser and auth hook are scoped here.
+fastify.register(residentialRoutes);
+
 // Serve our custom proxy page + service worker
 fastify.register(fastifyStatic, {
   root: publicPath,
@@ -105,7 +111,11 @@ fastify.register(fastifyStatic, {
   decorateReply: false,
 });
 
-fastify.get("/health", async () => ({ ok: true, build: "scramjet-v4" }));
+fastify.get("/health", async () => ({
+  ok: true,
+  build: "scramjet-v5-residential",
+  residential: Boolean((process.env.RESIDENTIAL_PROXY || "").trim()),
+}));
 
 fastify.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
   if (err) {
