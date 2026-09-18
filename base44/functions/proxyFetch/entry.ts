@@ -19,53 +19,58 @@ import { secrets } from "base44:runtime";
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-const GATEWAY_URL = (secrets.get("GATEWAY_URL") || "").replace(/\/$/, "");
-const GATEWAY_API_KEY = secrets.get("GATEWAY_API_KEY") || "";
-
-// Fetch a target HTML document through the residential-proxy gateway. The
-// gateway host tunnels via undici's ProxyAgent (Base44's runtime can't tunnel),
-// so the site sees a residential IP instead of a datacenter worker IP — this
-// is what gets past the anti-bot blocks that blank out YouTube/TikTok/etc.
-// Returns null if the gateway isn't configured or the call fails (caller
-// falls back to a direct fetch).
-async function fetchViaGateway(target: string): Promise<{ status: number; contentType: string; finalUrl: string; body: string } | null> {
-  if (!GATEWAY_URL || !GATEWAY_API_KEY) return null;
-  try {
-    const r = await fetch(GATEWAY_URL + "/fetch", {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-api-key": GATEWAY_API_KEY },
-      body: JSON.stringify({ url: target }),
-    });
-    if (!r.ok) { console.log("[proxyFetch] gateway non-ok", r.status); return null; }
-    const j: any = await r.json();
-    if (!j || j.ok !== true) { console.log("[proxyFetch] gateway err", j); return null; }
-    return { status: j.status, contentType: j.contentType || "", finalUrl: j.finalUrl || target, body: j.body || "" };
-  } catch (e: any) {
-    console.log("[proxyFetch] gateway fetch failed", e.message);
-    return null;
-  }
+function gatewayConfig() {
+  const url = (secrets.get("GATEWAY_URL") || "").replace(/\/$/, "");
+  const key = secrets.get("GATEWAY_API_KEY") || "";
+  if (!url || !key) throw new Error("The residential gateway is not configured.");
+  return { url, key };
 }
 
-// Stream a same-origin sub-resource (JS/CSS/image/API GET) through the gateway's
-// /raw endpoint so it egresses from the residential IP too. Without this, the
-// main document arrives via the residential proxy but its same-origin resources
-// are fetched from the Base44 worker's datacenter IP — sites detect the mismatch
-// and block them, leaving the page blank.
-async function fetchRawViaGateway(target: string, req: Request): Promise<Response | null> {
-  if (!GATEWAY_URL || !GATEWAY_API_KEY) return null;
+async function gatewayRequest(path, options, timeoutMs) {
+  const { url, key } = gatewayConfig();
+  let response;
   try {
-    const u = new URL(GATEWAY_URL + "/raw");
-    u.searchParams.set("url", target);
-    const gh: Record<string, string> = { "x-api-key": GATEWAY_API_KEY };
-    const range = req.headers.get("range");
-    if (range) gh["range"] = range;
-    const r = await fetch(u.href, { method: "GET", headers: gh, redirect: "follow" });
-    if (!r.ok) { console.log("[proxyFetch] gateway /raw non-ok", r.status); return null; }
-    return r;
-  } catch (e: any) {
-    console.log("[proxyFetch] gateway /raw failed", e.message);
-    return null;
+    response = await fetch(url + path, {
+      ...options,
+      headers: { ...options.headers, "x-api-key": key },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    throw new Error(error.name === "TimeoutError" || error.name === "AbortError"
+      ? "The residential gateway timed out. Check the Render service and its proxy connection."
+      : "Could not connect to the residential gateway on Render.");
   }
+  if (!response.ok && !response.headers.get("x-final-url")) {
+    await response.body?.cancel();
+    throw new Error("The residential gateway returned HTTP " + response.status + ". No direct connection or Google Translate fallback was used.");
+  }
+  return response;
+}
+
+async function fetchViaGateway(target, method, body, contentType) {
+  const response = await gatewayRequest("/fetch", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ url: target, method, body, contentType }),
+  }, 22000);
+  const data = await response.json();
+  if (!data || data.ok !== true || typeof data.body !== "string") {
+    throw new Error("The residential gateway returned an invalid page response.");
+  }
+  return data;
+}
+
+async function fetchRawViaGateway(target, req) {
+  const headers = {};
+  for (const name of ["range", "content-type", "accept", "if-none-match", "if-modified-since"]) {
+    const value = req.headers.get(name);
+    if (value) headers[name] = value;
+  }
+  const method = req.method;
+  return gatewayRequest("/raw?url=" + encodeURIComponent(target), {
+    method, headers,
+    ...(!["GET", "HEAD"].includes(method) ? { body: await req.arrayBuffer() } : {}),
+  }, 60000);
 }
 
 const BLOCK_PATTERNS = [
@@ -86,21 +91,23 @@ function isBlockPage(html: string): boolean {
 }
 
 export default async function(req: Request): Promise<Response> {
+  try {
+    return await handleProxyRequest(req);
+  } catch (error) {
+    console.error("[proxyFetch]", error.message);
+    const sdkRequest = req.method === "POST" && !new URL(req.url).searchParams.has("url");
+    const message = /gateway/i.test(error.message || "") ? error.message : "The residential proxy request failed while loading the response.";
+    return sdkRequest
+      ? Response.json({ ok: false, error: message, transport: "residential" })
+      : new Response(message, { status: 502, headers: { "content-type": "text/plain", ...corsHeaders("") } });
+  }
+}
+
+async function handleProxyRequest(req: Request): Promise<Response> {
   const reqUrl = new URL(req.url);
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders("") });
   const proxyOrigin = reqUrl.origin;
   const urlParam = reqUrl.searchParams.get("url");
-
-  // Debug: inspect request headers to find the real public origin (the
-  // internal dispatcher rewrites req.url, so reqUrl.origin is wrong).
-  if (reqUrl.searchParams.get("__vp_debug") === "1") {
-    const hdrs: Record<string, string> = {};
-    for (const [k, v] of req.headers.entries()) hdrs[k] = v;
-    return Response.json({
-      reqUrl: req.url, origin: reqUrl.origin, host: req.headers.get("host"),
-      xfh: req.headers.get("x-forwarded-host"), xfp: req.headers.get("x-forwarded-proto"),
-      forwarded: req.headers.get("forwarded"), all: hdrs,
-    });
-  }
 
   const isSdk = !urlParam && req.method === "POST";
 
@@ -133,87 +140,29 @@ export default async function(req: Request): Promise<Response> {
     return Response.json({ error: "Invalid url" }, { status: 400 });
   }
 
-  const headers: Record<string, string> = {
-    "user-agent": UA,
-    accept:
-      "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.8",
-    "accept-language": "en-US,en;q=0.9",
-    "cache-control": "max-age=0",
-    "upgrade-insecure-requests": "1",
-    "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "sec-fetch-dest": "document",
-    "sec-fetch-mode": "navigate",
-    "sec-fetch-site": "none",
-    "sec-fetch-user": "?1",
-    referer: parsed.origin + "/",
-  };
-  const method = isSdk ? sdkMethod : req.method || "GET";
-  if (!isSdk && method !== "GET") {
-    // Forward non-GET headers from the browser request (proxied fetch/XHR).
-    const skip = new Set([
-      "host", "connection", "content-length", "accept-encoding", "transfer-encoding",
-      "upgrade", "origin", "referer", "cookie", "authorization",
-    ]);
-    for (const [k, v] of req.headers.entries()) {
-      const lk = k.toLowerCase();
-      if (skip.has(lk) || lk.startsWith("x-") || lk.startsWith("cf-") || lk.startsWith("cdn-") || lk === "via" || lk === "true-client-ip") continue;
-      headers[lk] = v;
-    }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return Response.json({ ok: false, error: "Only HTTP and HTTPS websites are supported." }, { status: 400 });
   }
-  if (isSdk && sdkMethod !== "GET" && sdkBody !== undefined) {
-    headers["content-type"] = sdkContentType || "application/x-www-form-urlencoded";
-  }
-  const fetchOpts: any = { method, headers, redirect: "follow" };
-  if (!["GET", "HEAD"].includes(method)) {
-    fetchOpts.body = isSdk ? sdkBody : await req.arrayBuffer();
+  if (!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(sdkMethod)) {
+    return Response.json({ ok: false, error: "Unsupported request method." }, { status: 400 });
   }
 
-  let resp: Response;
-  let gwHtml: string | null = null;
-  let gwFinalUrl = "";
-  let gwContentType = "";
-  let gwStatus = 0;
   if (isSdk) {
-    const g = await fetchViaGateway(parsed.href);
-    if (g && g.body && /text\/html|application\/xhtml/i.test(g.contentType)) {
-      gwHtml = g.body;
-      gwFinalUrl = g.finalUrl;
-      gwContentType = g.contentType;
-      gwStatus = g.status;
+    const page = await fetchViaGateway(parsed.href, sdkMethod, sdkBody, sdkContentType);
+    const finalUrl = page.finalUrl || parsed.href;
+    const contentType = page.contentType || "";
+    if (!/text\/html|application\/xhtml/i.test(contentType)) {
+      return Response.json({ ok: true, nonHtml: true, finalUrl, contentType, status: page.status, transport: "residential" });
     }
-  }
-  if (gwHtml === null) {
-    let gwResp: Response | null = null;
-    if (!isSdk && method === "GET") gwResp = await fetchRawViaGateway(parsed.href, req);
-    if (gwResp) {
-      resp = gwResp;
-      console.log("[proxyFetch] using gateway /raw for", parsed.href);
-    } else {
-      try {
-        resp = await fetch(parsed.href, fetchOpts);
-      } catch (e: any) {
-        console.log("[proxyFetch] network error", parsed.href, e.message);
-        if (isSdk) return Response.json({ ok: false, blocked: true, error: e.message || "Network error", finalUrl: parsed.href });
-        return new Response("Proxy fetch failed: " + (e.message || ""), { status: 502, headers: { "content-type": "text/plain" } });
-      }
+    if (page.status >= 400 || isBlockPage(page.body)) {
+      return Response.json({ ok: false, blocked: true, error: "The website refused the residential proxy request (HTTP " + page.status + ").", finalUrl, status: page.status, transport: "residential" });
     }
+    return Response.json({ ok: true, html: inject(page.body, finalUrl, clientOrigin), finalUrl, contentType, status: page.status, transport: "residential" });
   }
 
-  // Gateway returned the HTML document — short-circuit. The residential egress
-  // avoids the anti-bot block pages a direct worker fetch would hit.
-  if (gwHtml !== null) {
-    if (isBlockPage(gwHtml)) {
-      console.log("[proxyFetch] block page detected (gateway)", gwFinalUrl);
-      return Response.json({ ok: false, blocked: true, error: "Site served an anti-bot or block page", finalUrl: gwFinalUrl, status: gwStatus });
-    }
-    const html = inject(gwHtml, gwFinalUrl, clientOrigin);
-    return Response.json({ ok: true, html, finalUrl: gwFinalUrl, contentType: gwContentType, status: gwStatus });
-  }
-
+  const resp = await fetchRawViaGateway(parsed.href, req);
   const contentType = resp.headers.get("content-type") || "";
-  const finalUrl = resp.url || parsed.href;
+  const finalUrl = resp.headers.get("x-final-url") || parsed.href;
   const isHtml = contentType.includes("text/html") || contentType.includes("application/xhtml");
   const isCss = contentType.includes("text/css");
   // The public origin the browser used to reach us — passed explicitly by the
@@ -222,26 +171,6 @@ export default async function(req: Request): Promise<Response> {
   const oParam = reqUrl.searchParams.get("o");
   const pubOrigin = (oParam && /^https?:\/\//i.test(oParam)) ? oParam.replace(/\/$/, "") : proxyOrigin;
   console.log("[proxyFetch]", parsed.href, "->", resp.status, contentType, "html=" + isHtml, "css=" + isCss, "final=" + finalUrl, "pubOrigin=" + pubOrigin);
-
-  // ---- SDK path: return JSON for the frontend to put into srcDoc ----
-  if (isSdk) {
-    if (!isHtml) {
-      // non-HTML (image/pdf/etc.) — frontend opens it directly (correct behavior)
-      return Response.json({ ok: true, nonHtml: true, finalUrl, contentType, status: resp.status });
-    }
-    let html = await resp.text();
-    if (isBlockPage(html)) {
-      console.log("[proxyFetch] block page detected", finalUrl);
-      return Response.json({ ok: false, blocked: true, error: "Site served an anti-bot or block page", finalUrl, status: resp.status });
-    }
-    html = inject(html, finalUrl, clientOrigin);
-    return Response.json({ ok: true, html, finalUrl, contentType, status: resp.status });
-  }
-
-  // ---- Direct browser GET path: stream resources through ----
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders(proxyOrigin) });
-  }
 
   if (isHtml) {
     // Document loaded directly (nested iframe). The platform injects script-src
@@ -259,7 +188,7 @@ export default async function(req: Request): Promise<Response> {
     // stylesheet's own URL, NOT the Base44 app URL). Use the public origin from
     // the `o` param so the generated URLs are reachable.
     let css = await resp.text();
-    css = rewriteCss(css, parsed.href, pubOrigin);
+    css = rewriteCss(css, finalUrl, pubOrigin);
     return new Response(css, {
       status: resp.status,
       headers: { "content-type": contentType, "cache-control": "public, max-age=31536000, immutable", "referrer-policy": "no-referrer", ...corsHeaders(proxyOrigin) },
@@ -313,39 +242,9 @@ function makeProxy(origin: string, base: string) {
   };
 }
 
-// Static asset extensions and known CDN hosts. These are loaded DIRECTLY by
-// the browser (not tunneled through Base44) — the single biggest speed win,
-// because YouTube/TikTok/etc. pull most of their bytes (video chunks,
-// thumbnails, player JS, fonts) from CDNs that serve any origin. Same-origin
-// resources (host == page host) are still proxied, since those may need the
-// proxy to reach the real site.
-const STATIC_EXT = /\.(js|mjs|css|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|eot|otf|mp4|webm|m3u8|m4s|ts|mp3|wav|ogg|pdf)(?:[?#]|$)/i;
-const CDN_HOSTS = /(googleapis|gstatic|googlevideo|ytimg|ggpht|tiktokcdn|akamaized|akamaihd|cloudfront|fastly|jsdelivr|unpkg|cdnjs|fbcdn|edgecast|llnwd|cdn\.|\.cdn)/i;
-
-function isDirectResource(u: string, base: string): boolean {
-  try {
-    const x = new URL(u, base);
-    const pageHost = new URL(base).host;
-    if (x.host === pageHost) return false; // same-origin -> still proxy
-    return STATIC_EXT.test(x.pathname) || CDN_HOSTS.test(x.host);
-  } catch { return false; }
-}
-
-// Resource URL builder: direct absolute URL for static/CDN third-party assets,
-// proxied URL otherwise. Used for <img>/<script>/<link>/<source>/<media> src
-// and CSS url()/@import.
+// Documents and resource requests must use the same residential transport.
 function makeResProxy(origin: string, base: string) {
-  const proxy = makeProxy(origin, base);
-  return (u: string) => {
-    if (!u) return u;
-    const s = String(u).trim();
-    if (!s) return u;
-    if (/^(data:|blob:|javascript:|mailto:|tel:|#)/i.test(s)) return u;
-    if (isDirectResource(s, base)) {
-      try { return new URL(s, base).href; } catch { return u; }
-    }
-    return proxy(s);
-  };
+  return makeProxy(origin, base);
 }
 
 function rewriteHtml(html: string, finalUrl: string, origin: string): string {
@@ -358,7 +257,16 @@ function rewriteHtml(html: string, finalUrl: string, origin: string): string {
   const re = /(<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>)/gi;
   let out = "", last = 0, m: RegExpExecArray | null;
   while ((m = re.exec(html))) {
-    out += rewriteAttrs(html.slice(last, m.index), resProxy, navProxy) + m[0];
+    out += rewriteAttrs(html.slice(last, m.index), resProxy, navProxy);
+    const tag = m[0];
+    const openingEnd = tag.indexOf(">") + 1;
+    if (/^<script\b/i.test(tag)) {
+      // Rewrite the script tag's src, without corrupting its JavaScript body.
+      out += rewriteAttrs(tag.slice(0, openingEnd), resProxy, navProxy) + tag.slice(openingEnd);
+    } else {
+      const closingStart = tag.toLowerCase().lastIndexOf("</style");
+      out += tag.slice(0, openingEnd) + rewriteCss(tag.slice(openingEnd, closingStart), finalUrl, origin) + tag.slice(closingStart);
+    }
     last = m.index + m[0].length;
   }
   out += rewriteAttrs(html.slice(last), resProxy, navProxy);
@@ -445,7 +353,7 @@ var OE=window.EventSource;if(OE)window.EventSource=function(u,c){try{u=rp(u)}cat
 var STATIC_EXT=/\.(js|mjs|css|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|eot|otf|mp4|webm|m3u8|m4s|ts|mp3|wav|ogg|pdf)(?:[?#]|$)/i;
 var CDN_HOSTS=/(googleapis|gstatic|googlevideo|ytimg|ggpht|tiktokcdn|akamaized|akamaihd|cloudfront|fastly|jsdelivr|unpkg|cdnjs|fbcdn|edgecast|cdn\.|\.cdn)/i;
 function isStatic(u){try{var x=new URL(u,document.baseURI);var ph=new URL(document.baseURI).host;if(x.host===ph)return false;return STATIC_EXT.test(x.pathname)||CDN_HOSTS.test(x.host)}catch(e){return false}}
-function rr(u){if(!u)return u;if(typeof u!=='string')u=String(u);if(/^(data:|blob:|javascript:|mailto:|tel:|#)/.test(u))return u;if(isStatic(u))return u;return rp(u)}
+function rr(u){return rp(u)}
 function hookEl(cn,prop,fn){var c=window[cn];if(!c||!c.prototype)return;var d=Object.getOwnPropertyDescriptor(c.prototype,prop);if(d&&d.set){var os=d.set;Object.defineProperty(c.prototype,prop,{configurable:true,enumerable:d.enumerable||true,get:d.get,set:function(v){try{v=(fn||rp)(v)}catch(e){}return os.call(this,v)}})}}
 hookEl('HTMLImageElement','src',rr);hookEl('HTMLScriptElement','src',rr);hookEl('HTMLLinkElement','href',rr);hookEl('HTMLSourceElement','src',rr);hookEl('HTMLMediaElement','src',rr);hookEl('HTMLIFrameElement','src');
 try{var OL=Location.prototype;['assign','replace'].forEach(function(m){OL[m]=function(u){try{var abs=new URL(u,document.baseURI).href;navTo(abs)}catch(e){navTo(u)}}});var hd=Object.getOwnPropertyDescriptor(OL,'href');if(hd&&hd.get&&hd.set){Object.defineProperty(OL,'href',{configurable:true,enumerable:true,get:function(){return hd.get.call(this)},set:function(u){try{var abs=new URL(u,document.baseURI).href;navTo(abs)}catch(e){navTo(u)}}})}}catch(e){}

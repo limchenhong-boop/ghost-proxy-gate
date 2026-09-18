@@ -9,6 +9,7 @@ import SettingsPanel from "@/components/SettingsPanel";
 import TabCloakPanel from "@/components/TabCloakPanel";
 import ThemePanel from "@/components/ThemePanel";
 import { Eye, Palette, X } from "lucide-react";
+import { base44 } from "@/api/base44Client";
 
 
 export default function Home() {
@@ -24,6 +25,7 @@ export default function Home() {
   const [diag, setDiag] = useState(null);
   const loadTimer = useRef(null);
   const blankTimer = useRef(null);
+  const activeRequest = useRef(0);
   const [history, setHistory] = useState([]);
   const [histIndex, setHistIndex] = useState(-1);
   const histIndexRef = useRef(-1);
@@ -53,6 +55,7 @@ export default function Home() {
     setTranslateUrl(null);
     setDiag(null);
     if (loadTimer.current) clearTimeout(loadTimer.current);
+    if (blankTimer.current) clearTimeout(blankTimer.current);
     loadTimer.current = setTimeout(() => {
       setLoading(false);
       setError("This site is taking too long to respond through the proxy.");
@@ -60,8 +63,10 @@ export default function Home() {
   }, []);
 
   const onLoaded = useCallback(() => {
+    if (!html && !translateUrl) return;
     setLoading(false);
     if (loadTimer.current) clearTimeout(loadTimer.current);
+    if (translateUrl) return;
     // After the document settles, detect a genuinely blank render and show a
     // diagnostic — NOT an automatic open-direct. srcDoc with allow-same-origin
     // is same-origin with the parent, so contentDocument is readable here.
@@ -82,7 +87,7 @@ export default function Home() {
         /* opaque document — can't inspect, leave as-is */
       }
     }, 6000);
-  }, [currentUrl]);
+  }, [currentUrl, html, translateUrl]);
 
   const pushHistory = useCallback((url) => {
     setHistory((prev) => {
@@ -105,14 +110,40 @@ export default function Home() {
   const navigate = useCallback(async (rawUrl, opts = {}) => {
     const url = normalizeQuery(rawUrl);
     if (!url) return;
+    const requestId = ++activeRequest.current;
     startLoad();
     setHtml("");
     setCurrentUrl(url);
-    setTranslateUrl("https://translate.google.com/translate?sl=auto&tl=en&u=" + encodeURIComponent(url));
-    setTranslateLoadId((id) => id + 1);
     setView("browse");
+    setTranslateLoadId((id) => id + 1);
     if (!opts.mode || opts.mode === "new") pushHistory(url);
-  }, [startLoad, pushHistory]);
+    try {
+      const response = await base44.functions.invoke("proxyFetch", {
+        url, origin: window.location.origin,
+        method: opts.method || "GET", body: opts.body,
+        contentType: opts.contentType,
+      });
+      if (requestId !== activeRequest.current) return;
+      const data = response.data || {};
+      setCurrentUrl(data.finalUrl || url);
+      replaceHistory(data.finalUrl || url);
+      if (data.blocked || data.nonHtml) {
+        setOpenDirectUrl(data.finalUrl || url);
+        setDiag({ url: data.finalUrl || url, status: data.status, note: data.error || "This file cannot be displayed as a web page." });
+        setLoading(false);
+        clearTimeout(loadTimer.current);
+        return;
+      }
+      if (!data.ok || !data.html) throw new Error(data.error || "The residential gateway returned no page content.");
+      setHtml(data.html);
+    } catch (e) {
+      if (requestId !== activeRequest.current) return;
+      setError(e.response?.data?.error || e.message || "The residential gateway could not load this page.");
+      setDiag({ url, note: "Residential proxy request failed. No direct or Google Translate fallback was used." });
+      setLoading(false);
+      clearTimeout(loadTimer.current);
+    }
+  }, [startLoad, pushHistory, replaceHistory]);
 
   useEffect(() => {
     function onMsg(e) {
@@ -161,6 +192,7 @@ export default function Home() {
     }
   };
   const goHome = () => {
+    activeRequest.current += 1;
     setView("home");
     setHtml("");
     setOpenDirectUrl(null);
@@ -182,7 +214,12 @@ export default function Home() {
   };
   const openViaTranslate = () => {
     const url = openDirectUrl || currentUrl;
-    if (url) navigate(url, { mode: "reload" });
+    if (!url) return;
+    activeRequest.current += 1;
+    startLoad();
+    setHtml("");
+    setTranslateUrl("https://translate.google.com/translate?sl=auto&tl=en&u=" + encodeURIComponent(url));
+    setTranslateLoadId((id) => id + 1);
   };
 
   const applyTheme = (t) => {
