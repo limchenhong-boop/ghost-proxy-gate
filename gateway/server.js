@@ -48,9 +48,17 @@ const fastify = Fastify({
   serverFactory: (handler) => {
     return createServer()
       .on("request", (req, res) => {
-        // COOP/COEP headers — required for SharedArrayBuffer (libcurl WASM)
-        res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
-        res.setHeader("Cross-Origin-Embedder-Policy", "credentialless");
+        // COOP/COEP headers — required for SharedArrayBuffer (libcurl WASM).
+        // BUT: COOP "same-origin" on a cross-origin iframe causes Chrome to
+        // block it with ERR_BLOCKED_BY_RESPONSE. proxy.html is the only page
+        // loaded in a cross-origin iframe (from the Base44 app), so we skip
+        // COOP for it. COEP credentialless + CORP cross-origin stay so the
+        // iframe response is still embeddable and cross-origin resources load.
+        const isProxyPage = req.url === "/" || req.url === "/proxy.html" || req.url.startsWith("/proxy.html?");
+        if (!isProxyPage) {
+          res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+          res.setHeader("Cross-Origin-Embedder-Policy", "credentialless");
+        }
         res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
         handler(req, res);
       })

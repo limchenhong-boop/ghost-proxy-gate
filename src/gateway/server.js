@@ -22,8 +22,11 @@ const fastify = Fastify({
   serverFactory: (handler) => {
     return createServer()
       .on("request", (req, res) => {
-        res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
-        res.setHeader("Cross-Origin-Embedder-Policy", "credentialless");
+        const isProxyPage = req.url === "/" || req.url === "/proxy.html" || req.url.startsWith("/proxy.html?");
+        if (!isProxyPage) {
+          res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+          res.setHeader("Cross-Origin-Embedder-Policy", "credentialless");
+        }
         res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
         handler(req, res);
       })
