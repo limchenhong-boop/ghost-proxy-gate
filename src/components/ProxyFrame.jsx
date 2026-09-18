@@ -3,7 +3,8 @@ import { ArrowLeft, ArrowRight, RotateCw, Home, ExternalLink, Lock, Loader2, Ale
 
 export default function ProxyFrame({
   currentUrl,
-  srcDoc,
+  frameSrc,
+  frameKey,
   loading,
   error,
   histIndex,
@@ -68,13 +69,15 @@ export default function ProxyFrame({
 
       {/* viewport */}
       <div className="relative flex-1 bg-white">
-        {srcDoc && (
+        {frameSrc && (
           <iframe
-            srcDoc={srcDoc}
-            sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads"
+            key={frameKey}
+            src={frameSrc}
+            sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-presentation"
             className="w-full h-full block"
             title="Ghost Proxy"
             referrerPolicy="no-referrer"
+            allow="autoplay; encrypted-media; fullscreen"
             onLoad={onLoaded}
           />
         )}

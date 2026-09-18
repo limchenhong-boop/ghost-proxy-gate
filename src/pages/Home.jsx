@@ -16,7 +16,9 @@ export default function Home() {
   const [view, setView] = useState("home");
   const [query, setQuery] = useState("");
   const [currentUrl, setCurrentUrl] = useState("");
-  const [srcDoc, setSrcDoc] = useState("");
+  const [frameSrc, setFrameSrc] = useState("");
+  const [frameKey, setFrameKey] = useState(0);
+  const [gatewayUrl, setGatewayUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [history, setHistory] = useState([]);
@@ -59,9 +61,21 @@ export default function Home() {
     });
   }, []);
 
-  // Core: load a page through the proxyFetch backend function (srcDoc approach).
-  // No cross-origin iframe — the HTML is fetched+rewritten server-side and
-  // injected via srcDoc, so Chrome never blocks it.
+  // Resolve the Scramjet gateway URL once (it's a secret, so the frontend asks
+  // the proxyFetch function for it via the "config" action).
+  const ensureGateway = useCallback(async () => {
+    if (gatewayUrl) return gatewayUrl;
+    const response = await base44.functions.invoke("proxyFetch", { action: "config" });
+    const url = response.data?.gatewayUrl;
+    if (!url) throw new Error("The proxy gateway is not configured.");
+    setGatewayUrl(url);
+    return url;
+  }, [gatewayUrl]);
+
+  // Core: load a page through the Scramjet gateway iframe. The gateway page
+  // (proxy.html) registers a service worker that intercepts every request the
+  // proxied site makes, so full SPAs like YouTube/TikTok render correctly —
+  // something the old srcDoc approach could never do.
   const loadPage = useCallback(async (rawUrl, opts = {}) => {
     const url = normalizeQuery(rawUrl);
     if (!url) return;
@@ -71,58 +85,14 @@ export default function Home() {
     setView("browse");
     if (!opts.mode || opts.mode === "new") pushHistory(url);
     try {
-      const payload = { url, origin: window.location.origin };
-      if (opts.method) payload.method = opts.method;
-      if (opts.body) payload.body = opts.body;
-      if (opts.contentType) payload.contentType = opts.contentType;
-      const response = await base44.functions.invoke("proxyFetch", payload);
-      const data = response.data;
-      if (!data || !data.ok) {
-        throw new Error(data?.error || "The proxy couldn't load this page.");
-      }
-      if (data.nonHtml) {
-        // Non-HTML response — open via the proxy endpoint in a new tab
-        const proxyUrl = window.location.origin + "/functions/proxyFetch?url=" + encodeURIComponent(data.finalUrl || url) + "&o=" + encodeURIComponent(window.location.origin);
-        window.open(proxyUrl, "_blank");
-        goHome();
-        return;
-      }
-      setSrcDoc(data.html);
-      if (data.finalUrl && data.finalUrl !== url) {
-        setCurrentUrl(data.finalUrl);
-        replaceHistory(data.finalUrl);
-      }
+      const gw = await ensureGateway();
+      setFrameSrc(`${gw}/proxy.html?url=${encodeURIComponent(url)}`);
+      setFrameKey((k) => k + 1);
     } catch (e) {
       setError(e.message || "Failed to load page through the proxy.");
-    } finally {
       setLoading(false);
     }
-  }, [pushHistory, replaceHistory]);
-
-  // Listen for navigation messages from the srcDoc iframe's client interceptor
-  useEffect(() => {
-    const onMessage = (e) => {
-      const d = e.data;
-      if (!d || d.__vp !== 1) return;
-      if (d.formSubmit) {
-        const fs = d.formSubmit;
-        const body = fs.data.map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v)).join("&");
-        loadPage(fs.url, { mode: "replace", method: fs.method, body, contentType: "application/x-www-form-urlencoded" });
-      } else if (d.url) {
-        if (d.soft) {
-          // Soft navigation (pushState/replaceState/popstate) — just update URL bar
-          setCurrentUrl(d.url);
-          if (d.replace) replaceHistory(d.url);
-          else if (!d.pop) pushHistory(d.url);
-        } else {
-          // Hard navigation (link click) — load the new page
-          loadPage(d.url, { mode: "replace" });
-        }
-      }
-    };
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [loadPage, pushHistory, replaceHistory]);
+  }, [ensureGateway, pushHistory]);
 
   const navigate = useCallback((rawUrl) => {
     loadPage(rawUrl, { mode: "new" });
@@ -144,7 +114,7 @@ export default function Home() {
   };
   const goHome = () => {
     setView("home");
-    setSrcDoc("");
+    setFrameSrc("");
     setCurrentUrl("");
     setQuery("");
     setError(null);
@@ -230,7 +200,8 @@ export default function Home() {
           <div className="fixed inset-0 z-10 flex flex-col">
             <ProxyFrame
               currentUrl={currentUrl}
-              srcDoc={srcDoc}
+              frameSrc={frameSrc}
+              frameKey={frameKey}
               loading={loading}
               error={error}
               histIndex={histIndex}
