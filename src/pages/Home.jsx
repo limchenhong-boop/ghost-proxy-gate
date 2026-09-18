@@ -16,16 +16,11 @@ export default function Home() {
   const [view, setView] = useState("home");
   const [query, setQuery] = useState("");
   const [currentUrl, setCurrentUrl] = useState("");
-  const [html, setHtml] = useState("");
-  const [openDirectUrl, setOpenDirectUrl] = useState(null);
-  const [translateUrl, setTranslateUrl] = useState(null);
-  const [translateLoadId, setTranslateLoadId] = useState(0);
+  const [proxySrc, setProxySrc] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [diag, setDiag] = useState(null);
-  const loadTimer = useRef(null);
-  const blankTimer = useRef(null);
-  const activeRequest = useRef(0);
+  const [gatewayUrl, setGatewayUrl] = useState("");
+  const [gatewayReady, setGatewayReady] = useState(false);
   const [history, setHistory] = useState([]);
   const [histIndex, setHistIndex] = useState(-1);
   const histIndexRef = useRef(-1);
@@ -41,53 +36,32 @@ export default function Home() {
     applyCloak(cloak);
   }, [cloak]);
 
+  // Fetch the gateway URL once on mount — it's a secret so the frontend
+  // can't access it directly; it goes through the proxyFetch config endpoint.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await base44.functions.invoke("proxyFetch", { action: "config" });
+        if (cancelled) return;
+        const url = (response.data && response.data.gatewayUrl) || "";
+        if (!url) throw new Error("Gateway URL not configured.");
+        setGatewayUrl(url.replace(/\/$/, ""));
+        setGatewayReady(true);
+      } catch (e) {
+        if (cancelled) return;
+        setError("The proxy gateway is not configured. Set the GATEWAY_URL secret and deploy the Render gateway.");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const [blurred, setBlurred] = useState(false);
   useEffect(() => {
     const onVis = () => { if (document.hidden) setBlurred(true); };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
   }, []);
-
-  const startLoad = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    setOpenDirectUrl(null);
-    setTranslateUrl(null);
-    setDiag(null);
-    if (loadTimer.current) clearTimeout(loadTimer.current);
-    if (blankTimer.current) clearTimeout(blankTimer.current);
-    loadTimer.current = setTimeout(() => {
-      setLoading(false);
-      setError("This site is taking too long to respond through the proxy.");
-    }, 25000);
-  }, []);
-
-  const onLoaded = useCallback(() => {
-    if (!html && !translateUrl) return;
-    setLoading(false);
-    if (loadTimer.current) clearTimeout(loadTimer.current);
-    if (translateUrl) return;
-    // After the document settles, detect a genuinely blank render and show a
-    // diagnostic — NOT an automatic open-direct. srcDoc with allow-same-origin
-    // is same-origin with the parent, so contentDocument is readable here.
-    if (blankTimer.current) clearTimeout(blankTimer.current);
-    blankTimer.current = setTimeout(() => {
-      try {
-        const f = document.querySelector("iframe[title='Ghost Proxy']");
-        const doc = f && f.contentDocument;
-        if (doc && doc.body) {
-          const text = (doc.body.innerText || "").trim();
-          const htmlLen = (doc.body.innerHTML || "").length;
-          if (text.length < 3 && htmlLen < 200) {
-            setError("Proxy loaded the page but it rendered blank. The site may require login, use client-side origin checks, or block proxies.");
-            setDiag({ url: currentUrl, note: "Blank document after load" });
-          }
-        }
-      } catch (e) {
-        /* opaque document — can't inspect, leave as-is */
-      }
-    }, 6000);
-  }, [currentUrl, html, translateUrl]);
 
   const pushHistory = useCallback((url) => {
     setHistory((prev) => {
@@ -107,119 +81,68 @@ export default function Home() {
     });
   }, []);
 
-  const navigate = useCallback(async (rawUrl, opts = {}) => {
+  const navigate = useCallback((rawUrl, opts = {}) => {
     const url = normalizeQuery(rawUrl);
     if (!url) return;
-    const requestId = ++activeRequest.current;
-    startLoad();
-    setHtml("");
+    if (!gatewayReady) {
+      setError("The proxy gateway is not ready yet. Please wait a moment and try again.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
     setCurrentUrl(url);
     setView("browse");
-    setTranslateLoadId((id) => id + 1);
+    setProxySrc(gatewayUrl + "/proxy.html?url=" + encodeURIComponent(url));
     if (!opts.mode || opts.mode === "new") pushHistory(url);
-    try {
-      const response = await base44.functions.invoke("proxyFetch", {
-        url, origin: window.location.origin,
-        method: opts.method || "GET", body: opts.body,
-        contentType: opts.contentType,
-      });
-      if (requestId !== activeRequest.current) return;
-      const data = response.data || {};
-      setCurrentUrl(data.finalUrl || url);
-      replaceHistory(data.finalUrl || url);
-      if (data.blocked || data.nonHtml) {
-        setOpenDirectUrl(data.finalUrl || url);
-        setDiag({ url: data.finalUrl || url, status: data.status, note: data.error || "This file cannot be displayed as a web page." });
-        setLoading(false);
-        clearTimeout(loadTimer.current);
-        return;
-      }
-      if (!data.ok || !data.html) throw new Error(data.error || "The residential gateway returned no page content.");
-      setHtml(data.html);
-    } catch (e) {
-      if (requestId !== activeRequest.current) return;
-      setError(e.response?.data?.error || e.message || "The residential gateway could not load this page.");
-      setDiag({ url, note: "Residential proxy request failed. No direct or Google Translate fallback was used." });
-      setLoading(false);
-      clearTimeout(loadTimer.current);
-    }
-  }, [startLoad, pushHistory, replaceHistory]);
-
-  useEffect(() => {
-    function onMsg(e) {
-      // Only accept messages from our own origin — the srcDoc iframe is
-      // same-origin with the parent because of allow-same-origin.
-      if (e.origin !== window.location.origin) return;
-      const d = e.data;
-      if (!d || !d.__vp) return;
-      if (d.soft) {
-        // SPA client-side navigation (pushState/replaceState/popstate) — sync the
-        // address bar + history WITHOUT a full re-fetch, so the SPA can render
-        // locally and stay smooth.
-        if (d.url) {
-          setCurrentUrl(d.url);
-          if (d.replace) replaceHistory(d.url);
-          else if (!d.pop) pushHistory(d.url);
-        }
-        return;
-      }
-      if (d.formSubmit) {
-        navigate(d.formSubmit.url, {
-          method: d.formSubmit.method,
-          body: new URLSearchParams(d.formSubmit.data).toString(),
-          contentType: "application/x-www-form-urlencoded",
-        });
-        return;
-      }
-      if (d.url) navigate(d.url, { mode: "new" });
-    }
-    window.addEventListener("message", onMsg);
-    return () => window.removeEventListener("message", onMsg);
-  }, [navigate, pushHistory, replaceHistory]);
+  }, [gatewayReady, gatewayUrl, pushHistory]);
 
   const goBack = () => {
     const ni = histIndex - 1;
     if (ni >= 0) {
       setHistIndex(ni);
-      navigate(history[ni], { mode: "back" });
+      const url = history[ni];
+      setCurrentUrl(url);
+      setLoading(true);
+      setError(null);
+      setProxySrc(gatewayUrl + "/proxy.html?url=" + encodeURIComponent(url));
     }
   };
   const goForward = () => {
     const ni = histIndex + 1;
     if (ni < history.length) {
       setHistIndex(ni);
-      navigate(history[ni], { mode: "forward" });
+      const url = history[ni];
+      setCurrentUrl(url);
+      setLoading(true);
+      setError(null);
+      setProxySrc(gatewayUrl + "/proxy.html?url=" + encodeURIComponent(url));
     }
   };
   const goHome = () => {
-    activeRequest.current += 1;
     setView("home");
-    setHtml("");
-    setOpenDirectUrl(null);
-    setTranslateUrl(null);
+    setProxySrc("");
     setCurrentUrl("");
     setQuery("");
     setError(null);
-    setDiag(null);
     setLoading(false);
-    if (loadTimer.current) clearTimeout(loadTimer.current);
-    if (blankTimer.current) clearTimeout(blankTimer.current);
+    setHistory([]);
+    setHistIndex(-1);
+    histIndexRef.current = -1;
   };
   const reload = () => {
-    if (currentUrl) navigate(currentUrl, { mode: "reload" });
+    if (currentUrl && gatewayUrl) {
+      setLoading(true);
+      setError(null);
+      // Force reload by changing the src (add a cache-busting param to proxy.html)
+      setProxySrc(gatewayUrl + "/proxy.html?url=" + encodeURIComponent(currentUrl) + "&t=" + Date.now());
+    }
   };
   const openExternal = () => {
-    const u = openDirectUrl || currentUrl;
+    const u = currentUrl;
     if (u) window.open(u, "_blank", "noopener");
   };
-  const openViaTranslate = () => {
-    const url = openDirectUrl || currentUrl;
-    if (!url) return;
-    activeRequest.current += 1;
-    startLoad();
-    setHtml("");
-    setTranslateUrl("https://translate.google.com/translate?sl=auto&tl=en&u=" + encodeURIComponent(url));
-    setTranslateLoadId((id) => id + 1);
+  const onLoaded = () => {
+    setLoading(false);
   };
 
   const applyTheme = (t) => {
@@ -287,14 +210,11 @@ export default function Home() {
         ) : (
           <div className="fixed inset-0 z-10 flex flex-col">
             <ProxyFrame
-              key={translateLoadId}
               currentUrl={currentUrl}
-              html={html}
-              openDirectUrl={openDirectUrl}
-              translateUrl={translateUrl}
+              proxySrc={proxySrc}
               loading={loading}
               error={error}
-              diag={diag}
+              gatewayReady={gatewayReady}
               histIndex={histIndex}
               histLen={history.length}
               onBack={goBack}
@@ -303,7 +223,6 @@ export default function Home() {
               onHome={goHome}
               onNavigate={(u) => navigate(u)}
               onOpenExternal={openExternal}
-              onOpenTranslate={openViaTranslate}
               onLoaded={onLoaded}
             />
           </div>

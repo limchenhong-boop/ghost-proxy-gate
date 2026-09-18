@@ -151,6 +151,17 @@ function isBlockPage(html: string): boolean {
 
 export default async function(req: Request): Promise<Response> {
   try {
+    // Config endpoint: return the gateway URL so the frontend can construct
+    // the Scramjet proxy iframe src. The gateway URL is a secret, so the
+    // frontend can't access it directly — it goes through this function.
+    const reqUrl0 = new URL(req.url);
+    if (req.method === "POST" && !reqUrl0.searchParams.has("url")) {
+      const body = await req.json().catch(() => ({}));
+      if (body.action === "config") {
+        const gatewayUrl = (secrets.get("GATEWAY_URL") || "").replace(/\/$/, "");
+        return Response.json({ ok: true, gatewayUrl });
+      }
+    }
     return await handleProxyRequest(req);
   } catch (error) {
     console.error("[proxyFetch]", error.message);

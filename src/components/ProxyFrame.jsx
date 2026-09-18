@@ -1,14 +1,12 @@
 import React, { useState, useEffect } from "react";
-import { ArrowLeft, ArrowRight, RotateCw, Home, ExternalLink, AlertTriangle, Loader2, Lock, Globe, Languages } from "lucide-react";
+import { ArrowLeft, ArrowRight, RotateCw, Home, ExternalLink, Lock, Loader2, AlertTriangle } from "lucide-react";
 
 export default function ProxyFrame({
   currentUrl,
-  html,
-  openDirectUrl,
-  translateUrl,
+  proxySrc,
   loading,
   error,
-  diag,
+  gatewayReady,
   histIndex,
   histLen,
   onBack,
@@ -17,7 +15,6 @@ export default function ProxyFrame({
   onHome,
   onNavigate,
   onOpenExternal,
-  onOpenTranslate,
   onLoaded,
 }) {
   const [urlInput, setUrlInput] = useState(currentUrl);
@@ -72,69 +69,34 @@ export default function ProxyFrame({
 
       {/* viewport */}
       <div className="relative flex-1 bg-white">
-        <iframe
-          {...(translateUrl ? { src: translateUrl } : { srcDoc: html })}
-          // allow-scripts: site JS must execute (srcDoc has no CSP).
-          // allow-forms: forms submit through the proxy.
-          // allow-popups: window.open is intercepted to stay in-proxy.
-          // allow-modals: alert/confirm from the page.
-          // allow-same-origin: srcDoc inherits parent origin so it can call the
-          //   proxy (same-origin) and the parent can inspect contentDocument for
-          //   blank detection. (allow-scripts + allow-same-origin together is a
-          //   known sandbox-escape vector; accepted here because the user is
-          //   deliberately loading untrusted proxied content.)
-          // allow-downloads: download links.
-          sandbox="allow-scripts allow-forms allow-popups allow-modals allow-same-origin allow-downloads"
-          className="w-full h-full block"
-          title="Ghost Proxy"
-          referrerPolicy="no-referrer"
-          onLoad={onLoaded}
-        />
+        {proxySrc && (
+          <iframe
+            src={proxySrc}
+            className="w-full h-full block"
+            title="Ghost Proxy"
+            referrerPolicy="no-referrer"
+            onLoad={onLoaded}
+          />
+        )}
         {loading && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3" style={{ background: "color-mix(in srgb, var(--vp-bg) 70%, transparent)" }}>
             <Loader2 className="w-8 h-8 animate-spin" style={{ color: "var(--vp-accent)" }} />
             <span className="text-white/70 text-sm font-medium">Tunneling through Ghost…</span>
           </div>
         )}
-        {openDirectUrl && !loading && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center" style={{ background: "color-mix(in srgb, var(--vp-bg) 88%, black)" }}>
-            <Globe className="w-10 h-10" style={{ color: "var(--vp-accent)" }} />
-            <p className="text-white font-semibold">This page can't be embedded</p>
-            <p className="text-white/60 text-sm max-w-md break-all">{openDirectUrl}</p>
-            <p className="text-white/40 text-xs max-w-md">
-              {diag && diag.note ? diag.note : "The site served a non-HTML file or a block page that can't be rendered inside the proxy."}
-            </p>
-            <div className="flex flex-wrap gap-2 justify-center mt-2">
-              <button
-                onClick={onOpenTranslate}
-                className="px-4 py-2 rounded-full text-sm font-semibold text-white inline-flex items-center gap-2"
-                style={{ background: "linear-gradient(135deg, var(--vp-accent), var(--vp-accent2))" }}
-              >
-                <Languages className="w-4 h-4" /> View via Google Translate
-              </button>
-              <button
-                onClick={onOpenExternal}
-                className="px-4 py-2 rounded-full text-sm font-semibold text-white/80 border border-white/15 inline-flex items-center gap-2"
-              >
-                <ExternalLink className="w-4 h-4" /> Open directly
-              </button>
-            </div>
+        {!gatewayReady && !error && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3" style={{ background: "color-mix(in srgb, var(--vp-bg) 88%, black)" }}>
+            <Loader2 className="w-8 h-8 animate-spin" style={{ color: "var(--vp-accent)" }} />
+            <span className="text-white/70 text-sm font-medium">Connecting to proxy gateway…</span>
           </div>
         )}
-        {error && !loading && !openDirectUrl && (
+        {error && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center" style={{ background: "color-mix(in srgb, var(--vp-bg) 88%, black)" }}>
             <AlertTriangle className="w-10 h-10" style={{ color: "var(--vp-accent2)" }} />
             <p className="text-white font-semibold">Proxy couldn't load this page</p>
             <p className="text-white/60 text-sm max-w-md">{error}</p>
-            {diag && (
-              <div className="text-white/40 text-xs max-w-md mt-1 space-y-0.5">
-                {diag.url && <p className="break-all">URL: {diag.url}</p>}
-                {diag.status && <p>Status: {diag.status}</p>}
-                {diag.note && <p>{diag.note}</p>}
-              </div>
-            )}
             <p className="text-white/40 text-xs max-w-md mt-1">
-              You can retry, go home, or open the original site directly as a last resort.
+              Make sure the Render gateway is deployed and running the Scramjet stack.
             </p>
             <div className="flex flex-wrap gap-2 mt-2 justify-center">
               <button
@@ -143,13 +105,6 @@ export default function ProxyFrame({
                 style={{ background: "linear-gradient(135deg, var(--vp-accent), var(--vp-accent2))" }}
               >
                 Retry
-              </button>
-              <button
-                onClick={onOpenTranslate}
-                className="px-4 py-2 rounded-full text-sm font-semibold text-white inline-flex items-center gap-2"
-                style={{ background: "linear-gradient(135deg, var(--vp-accent), var(--vp-accent2))" }}
-              >
-                <Languages className="w-4 h-4" /> View via Google Translate
               </button>
               <button
                 onClick={onOpenExternal}
