@@ -15,9 +15,29 @@
 //      resource), so scripts/css loaded this way still work inside srcDoc.
 
 import { secrets } from "base44:runtime";
+import { createClientFromRequest } from 'npm:@base44/sdk@0.8.48';
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
+// SSRF blocklist — reject requests to private IP ranges, localhost, and cloud
+// metadata endpoints. Prevents credential theft and internal network scanning.
+function isSsrfTarget(url: string): boolean {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return false; }
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host === "metadata.google.internal" || host === "metadata") return true;
+  const ip = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ip) {
+    const [a, b] = [parseInt(ip[1]), parseInt(ip[2])];
+    if (a === 10 || a === 127 || a === 0) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true;
+  }
+  if (host === "::1" || host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd")) return true;
+  return false;
+}
 
 function gatewayConfig() {
   const url = (secrets.get("GATEWAY_URL") || "").replace(/\/$/, "");
@@ -151,6 +171,12 @@ function isBlockPage(html: string): boolean {
 
 export default async function(req: Request): Promise<Response> {
   try {
+    // Authenticate the caller — this function exposes a proxy endpoint and a
+    // secret gateway URL, so only logged-in workspace members may use it.
+    const base44 = createClientFromRequest(req);
+    const user = await base44.auth.me();
+    if (!user) return Response.json({ error: "Unauthorized" }, { status: 401 });
+
     // Config endpoint: return the gateway URL so the frontend can construct
     // the Scramjet proxy iframe src. The gateway URL is a secret, so the
     // frontend can't access it directly — it goes through this function.
@@ -212,6 +238,9 @@ async function handleProxyRequest(req: Request): Promise<Response> {
 
   if (!["http:", "https:"].includes(parsed.protocol)) {
     return Response.json({ ok: false, error: "Only HTTP and HTTPS websites are supported." }, { status: 400 });
+  }
+  if (isSsrfTarget(parsed.href)) {
+    return Response.json({ ok: false, error: "Requests to private networks and metadata endpoints are blocked." }, { status: 403 });
   }
   if (!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(sdkMethod)) {
     return Response.json({ ok: false, error: "Unsupported request method." }, { status: 400 });
