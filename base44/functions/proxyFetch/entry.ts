@@ -14,8 +14,37 @@
 //      irrelevant (CSP is enforced on the embedding document, not on the
 //      resource), so scripts/css loaded this way still work inside srcDoc.
 
+import { secrets } from "base44:runtime";
+
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
+const GATEWAY_URL = (secrets.get("GATEWAY_URL") || "").replace(/\/$/, "");
+const GATEWAY_API_KEY = secrets.get("GATEWAY_API_KEY") || "";
+
+// Fetch a target HTML document through the residential-proxy gateway. The
+// gateway host tunnels via undici's ProxyAgent (Base44's runtime can't tunnel),
+// so the site sees a residential IP instead of a datacenter worker IP — this
+// is what gets past the anti-bot blocks that blank out YouTube/TikTok/etc.
+// Returns null if the gateway isn't configured or the call fails (caller
+// falls back to a direct fetch).
+async function fetchViaGateway(target: string): Promise<{ status: number; contentType: string; finalUrl: string; body: string } | null> {
+  if (!GATEWAY_URL || !GATEWAY_API_KEY) return null;
+  try {
+    const r = await fetch(GATEWAY_URL + "/fetch", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": GATEWAY_API_KEY },
+      body: JSON.stringify({ url: target }),
+    });
+    if (!r.ok) { console.log("[proxyFetch] gateway non-ok", r.status); return null; }
+    const j: any = await r.json();
+    if (!j || j.ok !== true) { console.log("[proxyFetch] gateway err", j); return null; }
+    return { status: j.status, contentType: j.contentType || "", finalUrl: j.finalUrl || target, body: j.body || "" };
+  } catch (e: any) {
+    console.log("[proxyFetch] gateway fetch failed", e.message);
+    return null;
+  }
+}
 
 const BLOCK_PATTERNS = [
   /\/sorry\/index/i,          // Google anti-bot
@@ -120,12 +149,38 @@ export default async function(req: Request): Promise<Response> {
   }
 
   let resp: Response;
-  try {
-    resp = await fetch(parsed.href, fetchOpts);
-  } catch (e: any) {
-    console.log("[proxyFetch] network error", parsed.href, e.message);
-    if (isSdk) return Response.json({ ok: false, blocked: true, error: e.message || "Network error", finalUrl: parsed.href });
-    return new Response("Proxy fetch failed: " + (e.message || ""), { status: 502, headers: { "content-type": "text/plain" } });
+  let gwHtml: string | null = null;
+  let gwFinalUrl = "";
+  let gwContentType = "";
+  let gwStatus = 0;
+  if (isSdk) {
+    const g = await fetchViaGateway(parsed.href);
+    if (g && g.body && /text\/html|application\/xhtml/i.test(g.contentType)) {
+      gwHtml = g.body;
+      gwFinalUrl = g.finalUrl;
+      gwContentType = g.contentType;
+      gwStatus = g.status;
+    }
+  }
+  if (gwHtml === null) {
+    try {
+      resp = await fetch(parsed.href, fetchOpts);
+    } catch (e: any) {
+      console.log("[proxyFetch] network error", parsed.href, e.message);
+      if (isSdk) return Response.json({ ok: false, blocked: true, error: e.message || "Network error", finalUrl: parsed.href });
+      return new Response("Proxy fetch failed: " + (e.message || ""), { status: 502, headers: { "content-type": "text/plain" } });
+    }
+  }
+
+  // Gateway returned the HTML document — short-circuit. The residential egress
+  // avoids the anti-bot block pages a direct worker fetch would hit.
+  if (gwHtml !== null) {
+    if (isBlockPage(gwHtml)) {
+      console.log("[proxyFetch] block page detected (gateway)", gwFinalUrl);
+      return Response.json({ ok: false, blocked: true, error: "Site served an anti-bot or block page", finalUrl: gwFinalUrl, status: gwStatus });
+    }
+    const html = inject(gwHtml, gwFinalUrl, clientOrigin);
+    return Response.json({ ok: true, html, finalUrl: gwFinalUrl, contentType: gwContentType, status: gwStatus });
   }
 
   const contentType = resp.headers.get("content-type") || "";
