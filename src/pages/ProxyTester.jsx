@@ -61,7 +61,7 @@ export default function ProxyTester() {
       </header>
 
       <main className="relative z-10 flex-1 overflow-y-auto px-4 sm:px-6 pb-8">
-        <div className="max-w-2xl mx-auto flex flex-col gap-6">
+        <div className="w-full max-w-3xl mx-auto flex flex-col gap-6">
           <h1 className="ghost-word text-5xl sm:text-6xl vp-fade-up text-center">proxy tester</h1>
 
           <div className="vp-fade-up flex flex-col gap-4" style={{ animationDelay: "0.08s" }}>
