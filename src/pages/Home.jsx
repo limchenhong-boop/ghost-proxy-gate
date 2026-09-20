@@ -9,7 +9,7 @@ import TabCloakPanel from "@/components/TabCloakPanel";
 import ThemePanel from "@/components/ThemePanel";
 import UpdatePopup from "@/components/UpdatePopup";
 import ProxyFrame from "@/components/ProxyFrame";
-import { Eye, Palette, X, ArrowLeft, Zap } from "lucide-react";
+import { Eye, Palette, X, ArrowLeft, Zap, Globe } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { base44 } from "@/api/base44Client";
 
@@ -125,6 +125,15 @@ export default function Home() {
           >
             <Zap className="w-4 h-4" />
             <span className="hidden sm:inline text-sm font-medium">Test</span>
+          </button>
+          <button
+            onClick={() => navigate("/browser")}
+            className="vp-pill"
+            style={vpIdle}
+            title="Browser"
+          >
+            <Globe className="w-4 h-4" />
+            <span className="hidden sm:inline text-sm font-medium">Browser</span>
           </button>
           <button
             onClick={() => setPanel(panel === "cloak" ? null : "cloak")}
