@@ -9,11 +9,13 @@ import TabCloakPanel from "@/components/TabCloakPanel";
 import ThemePanel from "@/components/ThemePanel";
 import UpdatePopup from "@/components/UpdatePopup";
 import ProxyFrame from "@/components/ProxyFrame";
-import { Eye, Palette, X, ArrowLeft } from "lucide-react";
+import { Eye, Palette, X, ArrowLeft, Zap } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { base44 } from "@/api/base44Client";
 
 
 export default function Home() {
+  const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [view, setView] = useState("home");
   const [currentUrl, setCurrentUrl] = useState("");
@@ -120,6 +122,15 @@ export default function Home() {
       <header className="relative z-10 flex items-center justify-between px-4 sm:px-6 py-3">
         <div />
         <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => navigate("/proxy-tester")}
+            className="vp-pill"
+            style={vpIdle}
+            title="Proxy Tester"
+          >
+            <Zap className="w-4 h-4" />
+            <span className="hidden sm:inline text-sm font-medium">Test</span>
+          </button>
           <button
             onClick={() => setPanel(panel === "cloak" ? null : "cloak")}
             className="vp-pill"

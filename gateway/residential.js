@@ -122,7 +122,7 @@ export default async function residentialRoutes(fastify) {
   fastify.addContentTypeParser("*", { parseAs: "buffer" }, (req, payload, done) => done(null, payload));
 
   fastify.addHook("onRequest", async (req, reply) => {
-    if (!req.url.startsWith("/fetch") && !req.url.startsWith("/raw")) return;
+    if (!req.url.startsWith("/fetch") && !req.url.startsWith("/raw") && !req.url.startsWith("/test-proxy")) return;
     const expected = process.env.GATEWAY_API_KEY || "";
     if (!expected || req.headers["x-api-key"] !== expected) {
       reply.code(401).send({ ok: false, error: "Unauthorized" });
@@ -216,5 +216,95 @@ export default async function residentialRoutes(fastify) {
       reply.header("access-control-allow-origin", "*");
       return reply.send(Readable.from(res.body));
     },
+  });
+
+  // ---- Proxy tester: test an arbitrary residential proxy against a target ----
+  fastify.post("/test-proxy", async (req, reply) => {
+    const { proxy, target } = req.body || {};
+    if (!proxy || typeof proxy !== "string") {
+      return reply.code(400).send({ ok: false, error: "A proxy URL is required." });
+    }
+    if (!target || !isHttpUrl(target)) {
+      return reply.code(400).send({ ok: false, error: "A valid http(s) target URL is required." });
+    }
+    const proxyUrl = toProxyUrl(proxy);
+    if (!proxyUrl) {
+      return reply.code(400).send({ ok: false, error: "Invalid proxy format. Use http://user:pass@host:port or host:port:user:pass." });
+    }
+    let agent;
+    try {
+      agent = new ProxyAgent(proxyUrl);
+    } catch (err) {
+      return reply.code(400).send({ ok: false, error: "Could not create proxy agent: " + err.message });
+    }
+
+    const redacted = proxyUrl.replace(/\/\/([^:]+):([^@]+)@/, "//$1:****@");
+
+    const through = async (url, headers, timeoutMs) => {
+      const start = Date.now();
+      const res = await undiciRequest(url, {
+        method: "GET",
+        headers,
+        dispatcher: agent,
+        maxRedirections: 8,
+        headersTimeout: timeoutMs,
+        bodyTimeout: timeoutMs,
+      });
+      return { res, elapsed: Date.now() - start };
+    };
+
+    // 1. Egress IP via an IP echo service through the proxy
+    let egressIp = null;
+    let ipError = null;
+    try {
+      const { res } = await through("https://api.ipify.org?format=json", {
+        "user-agent": UA,
+        accept: "application/json",
+      }, 15000);
+      const ipBody = JSON.parse(await res.body.text());
+      egressIp = ipBody.ip || null;
+    } catch (err) {
+      ipError = err.message;
+    }
+
+    // 2. Fetch the target through the proxy
+    try {
+      const { res, elapsed } = await through(target, docHeaders(target), 25000);
+      const contentType = res.headers["content-type"] || "";
+      const finalUrl = res.context?.history?.length
+        ? String(res.context.history[res.context.history.length - 1])
+        : target;
+      const raw = await res.body.text();
+      const titleMatch = raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+      return reply.send({
+        ok: true,
+        egressIp,
+        ipError,
+        proxy: redacted,
+        target: {
+          status: res.statusCode,
+          contentType,
+          finalUrl,
+          timingMs: elapsed,
+          title: titleMatch ? titleMatch[1].trim().slice(0, 200) : null,
+          bodyLength: raw.length,
+          bodySnippet: raw.slice(0, 2000),
+          headers: {
+            server: res.headers["server"] || null,
+            "content-type": contentType,
+            "content-length": res.headers["content-length"] || null,
+            "x-frame-options": res.headers["x-frame-options"] || null,
+          },
+        },
+      });
+    } catch (err) {
+      return reply.send({
+        ok: false,
+        egressIp,
+        ipError,
+        proxy: redacted,
+        targetError: err.message,
+      });
+    }
   });
 }
