@@ -1,6 +1,15 @@
 export default function ProxyFrame({ gatewayPage, loading, error }) {
   return (
     <div className="fixed inset-0 z-10 bg-black">
+      {gatewayPage && !error && (
+        <iframe
+          src={gatewayPage}
+          sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
+          allow="clipboard-read; clipboard-write; fullscreen; autoplay; encrypted-media"
+          className="w-full h-full border-0"
+          title="Browsing session"
+        />
+      )}
       {loading && (
         <div className="absolute inset-0 flex items-center justify-center" role="status" aria-label="Connecting to browsing gateway">
           <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin" />

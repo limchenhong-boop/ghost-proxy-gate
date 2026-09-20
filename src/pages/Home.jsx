@@ -25,6 +25,7 @@ export default function Home() {
   const [panel, setPanel] = useState(null);
   const [cloak, setCloak] = useState(loadCloak);
   const [theme, setTheme] = useState(loadTheme);
+  const [sessionId, setSessionId] = useState(null);
 
 
   useEffect(() => { applyCloak(cloak); }, [cloak]);
@@ -37,15 +38,19 @@ export default function Home() {
   }, []);
 
   const goHome = useCallback(() => {
+    if (sessionId) {
+      base44.functions.invoke("createBrowserSession", { action: "release", sessionId }).catch(() => {});
+    }
+    setSessionId(null);
     setView("home");
     setGatewayPage("");
     setCurrentUrl("");
     setError(null);
     setLoading(false);
-  }, []);
+  }, [sessionId]);
 
-  // The Base44 UI launches the actual isolated Scramjet gateway. No HTML
-  // fetch/srcDoc fallback: all website traffic belongs to Scramjet and Wisp.
+  // Launches a Browserbase cloud browser session, navigates it to the target,
+  // and embeds the live view in an iframe. No Scramjet/Wisp or residential proxy.
   const loadPage = useCallback(async (rawUrl) => {
     const url = normalizeQuery(rawUrl);
     if (!url) return;
@@ -55,27 +60,13 @@ export default function Home() {
     setCurrentUrl(url);
     setView("browse");
     try {
-      const response = await base44.functions.invoke("proxyFetch", { action: "config" });
-      if (!response.data?.ok || !response.data?.gatewayUrl) throw new Error(response.data?.error || "The browsing gateway is not configured.");
-      const gateway = new URL(response.data.gatewayUrl);
-      if (gateway.protocol !== "https:") throw new Error("The browsing gateway requires an HTTPS address.");
-      const health = response.data.health;
-      if (health?.build !== "scramjet-v6-wisp-connect" || health?.wispVersion !== "0.4.1" || health?.directFallback !== false) {
-        throw new Error("Render is still serving an older gateway build. Deploy the current Wisp gateway before browsing.");
-      }
-      const page = new URL("/proxy.html", gateway);
-      page.searchParams.set("url", url);
-      page.searchParams.set("return", window.location.origin + window.location.pathname);
-      setGatewayPage(page.href);
-      if (window.top !== window.self) {
-        setError("This embedded view cannot provide the browser isolation Scramjet needs. Open browsing in its own tab below.");
-      } else {
-        window.location.assign(page.href);
-      }
+      const response = await base44.functions.invoke("createBrowserSession", { action: "create", url });
+      const data = response.data;
+      if (!data?.ok || !data?.debugUrl) throw new Error(data?.error || "Could not start the browser session.");
+      setSessionId(data.sessionId);
+      setGatewayPage(data.debugUrl);
     } catch (failure) {
-      setError(failure.name === "TypeError" || failure.name === "TimeoutError"
-        ? "The browsing gateway could not be reached. It may be offline or blocked by your network; a reachable, approved gateway address is required. No direct-site fallback was used."
-        : failure.message || "The browsing gateway could not be opened.");
+      setError(failure.message || "The browser session could not be started.");
     } finally {
       setLoading(false);
     }
