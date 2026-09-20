@@ -29,9 +29,9 @@ export default async function(req: Request): Promise<Response> {
     if (!/^https?:\/\//i.test(target)) target = "https://" + target;
     try { new URL(target); } catch { return Response.json({ ok: false, error: "Invalid URL." }, { status: 400 }); }
 
-    // Resolve project ID (explicit secret, or auto-discover first project)
-    const projectId = secrets.get("BROWSERBASE_PROJECT_ID") || await resolveProjectId(apiKey);
-    if (!projectId) return Response.json({ ok: false, error: "No Browserbase project found. Set the BROWSERBASE_PROJECT_ID secret." }, { status: 503 });
+    // Auto-discover project ID from the account's first project
+    const projectId = await resolveProjectId(apiKey);
+    if (!projectId) return Response.json({ ok: false, error: "No Browserbase project found in your account." }, { status: 503 });
 
     // Create session with stealth + ad-blocking enabled
     const sessionRes = await fetch(`${BB_API}/sessions`, {
@@ -40,7 +40,6 @@ export default async function(req: Request): Promise<Response> {
       body: JSON.stringify({
         projectId,
         keepAlive: true,
-        browserSettings: { advancedStealth: true, blockAds: true },
       }),
       signal: AbortSignal.timeout(15000),
     });
