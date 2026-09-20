@@ -60,7 +60,11 @@ export default function Home() {
     setCurrentUrl(url);
     setView("browse");
     try {
-      const response = await base44.functions.invoke("createBrowserSession", { action: "create", url });
+      const response = await base44.functions.invoke("createBrowserSession", {
+        action: "create",
+        url,
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+      });
       const data = response.data;
       if (!data?.ok || !data?.debugUrl) throw new Error(data?.error || "Could not start the browser session.");
       setSessionId(data.sessionId);

@@ -40,6 +40,9 @@ export default async function(req: Request): Promise<Response> {
       body: JSON.stringify({
         projectId,
         keepAlive: true,
+        browserSettings: {
+          viewport: body.viewport || { width: 1280, height: 800 },
+        },
       }),
       signal: AbortSignal.timeout(15000),
     });
