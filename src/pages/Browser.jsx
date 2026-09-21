@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { base44 } from "@/api/base44Client";
 import { loadBackendUrl } from "@/lib/browserSettings";
+import { getCachedPage, setCachedPage } from "@/lib/pageCache";
 import BrowserTabs from "@/components/browser/BrowserTabs";
 import AddressBar from "@/components/browser/AddressBar";
 import ProxyViewport from "@/components/browser/ProxyViewport";
@@ -62,6 +63,16 @@ export default function Browser() {
     base44.entities.Bookmark.list("-created_date", 50).then(setBookmarks).catch(() => {});
   }, []);
 
+  // Warm the Render backend as soon as the shell opens. Render free instances
+  // spin down when idle, and the wake-up is the single biggest source of
+  // perceived slowness — pinging it now means it's already awake by the time
+  // the first real navigation happens.
+  useEffect(() => {
+    base44.functions.invoke("proxyFetch", { action: "config" }).catch(() => {});
+  }, []);
+
+  const didOpenInitialUrl = useRef(false);
+
   const recordHistory = useCallback((url, title) => {
     if (!url) return;
     if (lastHistoryRef.current[url]) return;
@@ -74,9 +85,37 @@ export default function Browser() {
   }, []);
 
   const navigateTab = useCallback(async (tabId, rawUrl, options = {}) => {
-    const { isBackForward = false } = options;
+    const { isBackForward = false, noCache = false } = options;
     const url = normalizeUrl(rawUrl);
     if (!url) return;
+
+    // Instant path: serve from the in-memory cache with no network round trip.
+    // This is what makes back/forward and revisits feel immediate.
+    if (!noCache) {
+      const cached = getCachedPage(url);
+      if (cached) {
+        updateTab(tabId, { loading: false, html: cached.html, url: cached.finalUrl, title: cached.title, error: null });
+        if (!isBackForward) {
+          setTabs((prev) => prev.map((t) => {
+            if (t.id !== tabId) return t;
+            const history = t.history.slice(0, t.historyIndex + 1);
+            if (history[history.length - 1] !== cached.finalUrl) history.push(cached.finalUrl);
+            const newIndex = history.length - 1;
+            return { ...t, history, historyIndex: newIndex, canGoBack: newIndex > 0, canGoForward: false };
+          }));
+        }
+        setDiagnostics({
+          endpoint: "in-memory cache (no network request)",
+          status: 200,
+          fromRender: true,
+          aiApiCalled: false,
+          directFetch: false,
+          cached: true,
+          timestamp: Date.now(),
+        });
+        return;
+      }
+    }
 
     updateTab(tabId, { loading: true, error: null, url });
 
@@ -93,6 +132,7 @@ export default function Browser() {
         fromRender: data.transport === "residential" || data.ok === true,
         aiApiCalled: false,
         directFetch: data.transport === "direct",
+        cached: false,
         timestamp: Date.now(),
       });
       if (!data.ok) {
@@ -104,6 +144,8 @@ export default function Browser() {
       const title = extractTitle(data.html) || finalUrl;
 
       updateTab(tabId, { loading: false, html: data.html, url: finalUrl, title, error: null });
+      setCachedPage(url, { html: data.html, finalUrl, title });
+      if (finalUrl !== url) setCachedPage(finalUrl, { html: data.html, finalUrl, title });
 
       if (!isBackForward) {
         setTabs((prev) => prev.map((t) => {
@@ -120,6 +162,14 @@ export default function Browser() {
       updateTab(tabId, { loading: false, error: err.message || "Network error." });
     }
   }, [backendUrl, recordHistory, updateTab]);
+
+  // Open a URL passed in from the home page (/browser?url=...) immediately.
+  useEffect(() => {
+    if (didOpenInitialUrl.current) return;
+    didOpenInitialUrl.current = true;
+    const initial = new URLSearchParams(window.location.search).get("url");
+    if (initial) navigateTab(tabsRef.current[0].id, initial);
+  }, [navigateTab]);
 
   const submitForm = useCallback(async (tabId, formSubmit) => {
     const { url, method, data: formData } = formSubmit;
@@ -219,7 +269,8 @@ export default function Browser() {
 
   const reload = useCallback(() => {
     const tab = tabsRef.current.find((t) => t.id === activeTabId);
-    if (tab?.url) navigateTab(activeTabId, tab.url, { isBackForward: true });
+    // Reload always bypasses the cache — the user explicitly wants fresh content.
+    if (tab?.url) navigateTab(activeTabId, tab.url, { isBackForward: true, noCache: true });
   }, [activeTabId, navigateTab]);
 
   const goHome = useCallback(() => {

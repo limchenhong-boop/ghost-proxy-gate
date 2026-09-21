@@ -71,8 +71,9 @@ export default function BrowserDiagnostics({ diagnostics, onClose }) {
           </div>
         </div>
       )}
-      <div className="mt-2 text-xs text-gray-600">
-        Last request: {diagnostics.timestamp ? new Date(diagnostics.timestamp).toLocaleTimeString() : "—"}
+      <div className="mt-2 flex items-center justify-between text-xs text-gray-600">
+        <span>Last request: {diagnostics.timestamp ? new Date(diagnostics.timestamp).toLocaleTimeString() : "—"}</span>
+        {diagnostics.cached && <span className="text-green-500/80">served from cache — 0ms</span>}
       </div>
     </div>
   );

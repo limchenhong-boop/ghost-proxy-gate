@@ -4,17 +4,24 @@ import { AlertCircle, RotateCw, ExternalLink, Loader2 } from "lucide-react";
 // Displays proxied page content (rewritten HTML from proxyFetch) in a
 // sandboxed srcDoc iframe. The client interceptor injected by proxyFetch
 // posts navigation messages to the parent — this component forwards them
-// via onMessage. Sub-resources load directly through the proxy backend.
-export default function ProxyViewport({ tab, onMessage }) {
-  const iframeRef = useRef(null);
+// via onMessage. Sub-resources load through the Render proxy backend.
+//
+// Perf: the message listener is bound ONCE (onMessage is read through a ref),
+// and the component is memoized on the fields that actually affect output, so
+// unrelated tab-state updates never reassign srcDoc — reassigning srcDoc forces
+// the browser to tear down and re-parse the whole document, which is what made
+// navigation feel laggy.
+function ProxyViewport({ tab, onMessage }) {
+  const onMessageRef = useRef(onMessage);
+  onMessageRef.current = onMessage;
 
   useEffect(() => {
     const handler = (e) => {
-      if (e.data && e.data.__vp === 1) onMessage(e.data);
+      if (e.data && e.data.__vp === 1) onMessageRef.current(e.data);
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [onMessage]);
+  }, []);
 
   if (tab.error) {
     return (
@@ -44,11 +51,8 @@ export default function ProxyViewport({ tab, onMessage }) {
 
   return (
     <div className="relative w-full h-full bg-white">
-      {tab.loading && (
-        <div className="absolute top-0 left-0 right-0 h-1 bg-blue-500 z-10 animate-pulse" />
-      )}
+      {tab.loading && <div className="vp-progress" />}
       <iframe
-        ref={iframeRef}
         srcDoc={tab.html || ""}
         sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads"
         className="w-full h-full border-0 bg-white"
@@ -57,3 +61,13 @@ export default function ProxyViewport({ tab, onMessage }) {
     </div>
   );
 }
+
+// Only re-render (and therefore only touch srcDoc) when something visible
+// actually changed. Keyed per tab id so switching tabs still swaps documents.
+export default React.memo(ProxyViewport, (prev, next) =>
+  prev.tab.id === next.tab.id &&
+  prev.tab.html === next.tab.html &&
+  prev.tab.loading === next.tab.loading &&
+  prev.tab.error === next.tab.error &&
+  prev.tab.url === next.tab.url
+);
