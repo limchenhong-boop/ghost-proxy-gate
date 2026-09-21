@@ -42,7 +42,7 @@ function isSsrfTarget(url: string): boolean {
 function gatewayConfig(overrideUrl) {
   const url = (overrideUrl || secrets.get("GATEWAY_URL") || "").replace(/\/$/, "");
   const key = secrets.get("GATEWAY_API_KEY") || "";
-  if (!url || !key) throw new Error("The residential gateway is not configured.");
+  if (!url || !key) throw new Error("The proxy backend is not configured. Set GATEWAY_URL (PROXY_BACKEND_URL) and GATEWAY_API_KEY in app secrets.");
   return { url, key };
 }
 
@@ -57,12 +57,12 @@ async function gatewayRequest(path, options, timeoutMs, gatewayUrl) {
     });
   } catch (error) {
     throw new Error(error.name === "TimeoutError" || error.name === "AbortError"
-      ? "The residential gateway timed out. Check the Render service and its proxy connection."
-      : "Could not connect to the residential gateway on Render.");
+    ? "The proxy backend timed out. Check the Render service."
+    : "Could not connect to the proxy backend on Render.");
   }
   if (!response.ok && !response.headers.get("x-final-url")) {
     await response.body?.cancel();
-    throw new Error("The residential gateway returned HTTP " + response.status + ". No direct connection or Google Translate fallback was used.");
+    throw new Error("The proxy backend returned HTTP " + response.status + ".");
   }
   return response;
 }
@@ -75,7 +75,7 @@ async function fetchViaGateway(target, method, body, contentType, gatewayUrl) {
   }, 22000, gatewayUrl);
   const data = await response.json();
   if (!data || data.ok !== true || typeof data.body !== "string") {
-    throw new Error("The residential gateway returned an invalid page response.");
+    throw new Error("The proxy backend returned an invalid page response.");
   }
   return data;
 }
@@ -93,81 +93,8 @@ async function fetchRawViaGateway(target, req, gatewayUrl) {
   }, 60000, gatewayUrl);
 }
 
-// ---- Direct fetch from the Base44 runtime (Cloudflare Workers) ----
-// Works for most sites without the residential gateway. The gateway is only
-// needed for anti-bot-protected sites (Google, YouTube, TikTok, etc.), so we
-// try direct first and fall back to the gateway when direct is blocked/fails.
-
-function directHeaders(target: string): Record<string, string> {
-  let origin = target;
-  try { origin = new URL(target).origin + "/"; } catch {}
-  return {
-    "user-agent": UA,
-    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.8",
-    "accept-language": "en-US,en;q=0.9",
-    "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "sec-fetch-dest": "document",
-    "sec-fetch-mode": "navigate",
-    "sec-fetch-site": "none",
-    "sec-fetch-user": "?1",
-    "referer": origin,
-  };
-}
-
-async function fetchDirect(target: string, method: string, body?: string, contentType?: string) {
-  const headers = directHeaders(target);
-  if (method === "POST" && contentType) headers["content-type"] = contentType;
-  const opts: any = { method, headers, redirect: "follow", signal: AbortSignal.timeout(15000) };
-  if (!["GET", "HEAD"].includes(method) && body != null) opts.body = body;
-  const r = await fetch(target, opts);
-  const ct = r.headers.get("content-type") || "";
-  const finalUrl = r.url || target;
-  const buf = await r.arrayBuffer();
-  const isText = /^(text\/|application\/(json|javascript|x-javascript|xml|xhtml\+xml))/i.test(ct) || !ct;
-  const textBody = isText ? new TextDecoder("utf-8").decode(buf) : "";
-  return { ok: true, status: r.status, contentType: ct, finalUrl, body: textBody, isText };
-}
-
-async function fetchRawDirect(target: string, req: Request) {
-  let referer = target;
-  try { referer = new URL(target).origin + "/"; } catch {}
-  const headers: Record<string, string> = {
-    "user-agent": UA,
-    "accept": "*/*",
-    "accept-language": "en-US,en;q=0.9",
-    "referer": referer,
-    "sec-fetch-dest": "empty",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-site": "same-origin",
-  };
-  for (const name of ["range", "accept", "if-none-match", "if-modified-since"]) {
-    const value = req.headers.get(name);
-    if (value) headers[name] = value;
-  }
-  const method = req.method;
-  const opts: any = { method, headers, redirect: "follow", signal: AbortSignal.timeout(30000) };
-  if (!["GET", "HEAD"].includes(method)) opts.body = await req.arrayBuffer();
-  return fetch(target, opts);
-}
-
-const BLOCK_PATTERNS = [
-  /\/sorry\/index/i,          // Google anti-bot
-  /captcha/i,
-  /access\s*denied/i,
-  /verify\s*you\s*are\s*a\s*human/i,
-  /are\s*you\s*a\s*robot/i,
-  /unusual\s*traffic/i,
-];
-
-function isBlockPage(html: string): boolean {
-  // Only short pages can be block pages; real sites have large HTML.
-  if (html.length < 4000) {
-    for (const re of BLOCK_PATTERNS) if (re.test(html)) return true;
-  }
-  return false;
-}
+// Direct fetch has been removed — ALL page and resource fetching goes through
+// the Render proxy backend. The Base44 function never contacts target websites.
 
 export default async function(req: Request): Promise<Response> {
   try {
@@ -185,7 +112,7 @@ export default async function(req: Request): Promise<Response> {
       const body = await req.clone().json().catch(() => ({}));
       if (body.action === "config") {
         const gatewayUrl = (secrets.get("GATEWAY_URL") || "").replace(/\/$/, "");
-        if (!gatewayUrl) return Response.json({ ok: false, error: "The browsing gateway is not configured." }, { status: 503 });
+        if (!gatewayUrl) return Response.json({ ok: false, error: "The proxy backend is not configured." }, { status: 503 });
         const parsedGateway = new URL(gatewayUrl);
         if (parsedGateway.protocol !== "https:") return Response.json({ ok: false, error: "The browsing gateway requires HTTPS." }, { status: 503 });
         const healthResponse = await fetch(new URL("/health", parsedGateway), { signal: AbortSignal.timeout(12000) });
@@ -198,7 +125,7 @@ export default async function(req: Request): Promise<Response> {
   } catch (error) {
     console.error("[proxyFetch]", error.message);
     const sdkRequest = req.method === "POST" && !new URL(req.url).searchParams.has("url");
-    const message = /gateway/i.test(error.message || "") ? error.message : "The residential proxy request failed while loading the response.";
+    const message = /backend|gateway|proxy/i.test(error.message || "") ? error.message : "The proxy backend request failed. All fetching goes through the Render backend.";
     return sdkRequest
       ? Response.json({ ok: false, error: message, transport: "residential" })
       : new Response(message, { status: 502, headers: { "content-type": "text/plain", ...corsHeaders("") } });
@@ -258,82 +185,28 @@ async function handleProxyRequest(req: Request): Promise<Response> {
   }
 
   if (isSdk) {
-    let htmlBody = "";
-    let finalUrl = parsed.href;
-    let contentType = "";
-    let status = 0;
-    let transport = "direct";
-    let gotPage = false;
-    let nonHtml = false;
-
-    // 1. Try the residential gateway first — consistent residential IP egress
-    //    bypasses anti-bot blocks on Google, YouTube, TikTok, etc.
+    // Page fetch — ONLY through the Render proxy backend. Never direct.
+    let page;
     try {
-      const page = await fetchViaGateway(parsed.href, sdkMethod, sdkBody, sdkContentType, clientGatewayUrl);
-      transport = "residential";
-      finalUrl = page.finalUrl || finalUrl;
-      contentType = page.contentType || contentType;
-      status = page.status;
-      if (!/text\/html|application\/xhtml/i.test(contentType)) {
-        return Response.json({ ok: true, nonHtml: true, finalUrl, contentType, status, transport });
-      }
-      if (page.status < 400 && !isBlockPage(page.body)) {
-        htmlBody = page.body;
-        gotPage = true;
-      }
+      page = await fetchViaGateway(parsed.href, sdkMethod, sdkBody, sdkContentType, clientGatewayUrl);
     } catch (e) {
-      console.log("[proxyFetch] gateway fetch failed:", e.message);
+      return Response.json({ ok: false, error: e.message, transport: "residential" });
     }
-
-    // 2. Fall back to a direct fetch if the gateway is unavailable.
-    if (!gotPage) {
-      try {
-        const direct = await fetchDirect(parsed.href, sdkMethod, sdkBody, sdkContentType);
-        transport = "direct";
-        contentType = direct.contentType;
-        finalUrl = direct.finalUrl;
-        status = direct.status;
-        if (!/text\/html|application\/xhtml/i.test(contentType)) {
-          return Response.json({ ok: true, nonHtml: true, finalUrl, contentType, status, transport });
-        }
-        if (direct.status < 400 && !isBlockPage(direct.body)) {
-          htmlBody = direct.body;
-          gotPage = true;
-        }
-      } catch (e) {
-        console.log("[proxyFetch] direct fetch failed:", e.message);
-      }
+    const finalUrl = page.finalUrl || parsed.href;
+    const contentType = page.contentType || "";
+    const status = page.status;
+    if (!/text\/html|application\/xhtml/i.test(contentType)) {
+      return Response.json({ ok: true, nonHtml: true, finalUrl, contentType, status, transport: "residential" });
     }
-
-    if (!gotPage) {
-      return Response.json({ ok: false, error: "The residential gateway and direct connection both failed to load this page.", finalUrl, status, transport });
-    }
-    return Response.json({ ok: true, html: inject(htmlBody, finalUrl, clientOrigin), finalUrl, contentType, status, transport });
+    return Response.json({ ok: true, html: inject(page.body, finalUrl, clientOrigin), finalUrl, contentType, status, transport: "residential" });
   }
 
-  // Try direct fetch for sub-resources (fast, works for CDNs). Fall back to the
-  // residential gateway on network errors AND on anti-bot block responses
-  // (403/429/503) so same-origin resources on protected sites load fully.
+  // Resource fetch — ONLY through the Render proxy backend. Never direct.
   let resp: Response;
-  const reqForGateway = req.clone();
   try {
-    resp = await fetchRawDirect(parsed.href, req);
-    if ([403, 429, 503].includes(resp.status)) {
-      try { resp.body?.cancel(); } catch {}
-      try {
-        const gwResp = await fetchRawViaGateway(parsed.href, reqForGateway, clientGatewayUrl);
-        if (gwResp.status < 500) resp = gwResp;
-      } catch (e2) {
-        console.log("[proxyFetch] gateway fallback for blocked resource failed:", e2.message);
-      }
-    }
+    resp = await fetchRawViaGateway(parsed.href, req, clientGatewayUrl);
   } catch (e) {
-    console.log("[proxyFetch] raw direct failed, trying gateway:", e.message);
-    try {
-      resp = await fetchRawViaGateway(parsed.href, reqForGateway, clientGatewayUrl);
-    } catch (e2) {
-      return new Response("Sub-resource could not be loaded: " + e2.message, { status: 502, headers: { "content-type": "text/plain", ...corsHeaders(proxyOrigin) } });
-    }
+    return new Response("Resource could not be loaded through the proxy backend: " + e.message, { status: 502, headers: { "content-type": "text/plain", ...corsHeaders(proxyOrigin) } });
   }
   const contentType = resp.headers.get("content-type") || "";
   const finalUrl = resp.headers.get("x-final-url") || resp.url || parsed.href;

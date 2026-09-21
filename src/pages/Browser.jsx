@@ -7,7 +7,8 @@ import AddressBar from "@/components/browser/AddressBar";
 import ProxyViewport from "@/components/browser/ProxyViewport";
 import BrowserSettings from "@/components/browser/BrowserSettings";
 import NewTabPage from "@/components/browser/NewTabPage";
-import { Settings, ArrowLeft } from "lucide-react";
+import BrowserDiagnostics from "@/components/browser/BrowserDiagnostics";
+import { Settings, ArrowLeft, Activity } from "lucide-react";
 
 function normalizeUrl(input) {
   const t = input.trim();
@@ -49,6 +50,8 @@ export default function Browser() {
   const [showSettings, setShowSettings] = useState(false);
   const [focusSignal, setFocusSignal] = useState(0);
   const [backendUrl, setBackendUrl] = useState(loadBackendUrl);
+  const [diagnostics, setDiagnostics] = useState(null);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const lastHistoryRef = useRef({});
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
@@ -84,6 +87,14 @@ export default function Browser() {
         ...(backendUrl ? { gatewayUrl: backendUrl } : {}),
       });
       const data = resp.data;
+      setDiagnostics({
+        endpoint: (backendUrl || "server default (secret)") + " → /fetch",
+        status: data.status ?? null,
+        fromRender: data.transport === "residential" || data.ok === true,
+        aiApiCalled: false,
+        directFetch: data.transport === "direct",
+        timestamp: Date.now(),
+      });
       if (!data.ok) {
         updateTab(tabId, { loading: false, error: data.error || "Failed to load page." });
         return;
@@ -293,6 +304,13 @@ export default function Browser() {
         )}
       </div>
       <button
+        onClick={() => setShowDiagnostics((s) => !s)}
+        className="fixed top-2 right-28 z-50 w-8 h-8 flex items-center justify-center rounded-lg bg-black/50 text-gray-400 hover:text-white backdrop-blur-sm border border-white/10 transition-colors"
+        title="Diagnostics"
+      >
+        <Activity className="w-4 h-4" />
+      </button>
+      <button
         onClick={() => setShowSettings(true)}
         className="fixed top-2 right-16 z-50 w-8 h-8 flex items-center justify-center rounded-lg bg-black/50 text-gray-400 hover:text-white backdrop-blur-sm border border-white/10 transition-colors"
         title="Settings"
@@ -305,6 +323,9 @@ export default function Browser() {
       >
         Exit
       </button>
+      {showDiagnostics && (
+        <BrowserDiagnostics diagnostics={diagnostics} onClose={() => setShowDiagnostics(false)} />
+      )}
       {showSettings && (
         <BrowserSettings
           backendUrl={backendUrl}
