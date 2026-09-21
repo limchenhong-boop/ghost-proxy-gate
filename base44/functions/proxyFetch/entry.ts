@@ -39,15 +39,15 @@ function isSsrfTarget(url: string): boolean {
   return false;
 }
 
-function gatewayConfig() {
-  const url = (secrets.get("GATEWAY_URL") || "").replace(/\/$/, "");
+function gatewayConfig(overrideUrl) {
+  const url = (overrideUrl || secrets.get("GATEWAY_URL") || "").replace(/\/$/, "");
   const key = secrets.get("GATEWAY_API_KEY") || "";
   if (!url || !key) throw new Error("The residential gateway is not configured.");
   return { url, key };
 }
 
-async function gatewayRequest(path, options, timeoutMs) {
-  const { url, key } = gatewayConfig();
+async function gatewayRequest(path, options, timeoutMs, gatewayUrl) {
+  const { url, key } = gatewayConfig(gatewayUrl);
   let response;
   try {
     response = await fetch(url + path, {
@@ -67,12 +67,12 @@ async function gatewayRequest(path, options, timeoutMs) {
   return response;
 }
 
-async function fetchViaGateway(target, method, body, contentType) {
+async function fetchViaGateway(target, method, body, contentType, gatewayUrl) {
   const response = await gatewayRequest("/fetch", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ url: target, method, body, contentType }),
-  }, 22000);
+  }, 22000, gatewayUrl);
   const data = await response.json();
   if (!data || data.ok !== true || typeof data.body !== "string") {
     throw new Error("The residential gateway returned an invalid page response.");
@@ -80,7 +80,7 @@ async function fetchViaGateway(target, method, body, contentType) {
   return data;
 }
 
-async function fetchRawViaGateway(target, req) {
+async function fetchRawViaGateway(target, req, gatewayUrl) {
   const headers = {};
   for (const name of ["range", "content-type", "accept", "if-none-match", "if-modified-since"]) {
     const value = req.headers.get(name);
@@ -90,7 +90,7 @@ async function fetchRawViaGateway(target, req) {
   return gatewayRequest("/raw?url=" + encodeURIComponent(target), {
     method, headers,
     ...(!["GET", "HEAD"].includes(method) ? { body: await req.arrayBuffer() } : {}),
-  }, 60000);
+  }, 60000, gatewayUrl);
 }
 
 // ---- Direct fetch from the Base44 runtime (Cloudflare Workers) ----
@@ -222,6 +222,7 @@ async function handleProxyRequest(req: Request): Promise<Response> {
   let sdkMethod = "GET";
   let sdkBody: string | undefined;
   let sdkContentType: string | undefined;
+  let clientGatewayUrl: string | undefined;
   if (urlParam) target = urlParam;
   else if (isSdk) {
     const body = await req.json().catch(() => ({}));
@@ -230,6 +231,10 @@ async function handleProxyRequest(req: Request): Promise<Response> {
     if (body.method) sdkMethod = String(body.method).toUpperCase();
     if (body.body != null) sdkBody = String(body.body);
     if (body.contentType) sdkContentType = String(body.contentType);
+    if (body.gatewayUrl) {
+      const gw = String(body.gatewayUrl).trim().replace(/\/$/, "");
+      if (/^https?:\/\//i.test(gw) && !isSsrfTarget(gw)) clientGatewayUrl = gw;
+    }
   }
   if (!target || typeof target !== "string") {
     return Response.json({ error: "Missing url" }, { status: 400 });
@@ -264,7 +269,7 @@ async function handleProxyRequest(req: Request): Promise<Response> {
     // 1. Try the residential gateway first — consistent residential IP egress
     //    bypasses anti-bot blocks on Google, YouTube, TikTok, etc.
     try {
-      const page = await fetchViaGateway(parsed.href, sdkMethod, sdkBody, sdkContentType);
+      const page = await fetchViaGateway(parsed.href, sdkMethod, sdkBody, sdkContentType, clientGatewayUrl);
       transport = "residential";
       finalUrl = page.finalUrl || finalUrl;
       contentType = page.contentType || contentType;
@@ -316,7 +321,7 @@ async function handleProxyRequest(req: Request): Promise<Response> {
     if ([403, 429, 503].includes(resp.status)) {
       try { resp.body?.cancel(); } catch {}
       try {
-        const gwResp = await fetchRawViaGateway(parsed.href, reqForGateway);
+        const gwResp = await fetchRawViaGateway(parsed.href, reqForGateway, clientGatewayUrl);
         if (gwResp.status < 500) resp = gwResp;
       } catch (e2) {
         console.log("[proxyFetch] gateway fallback for blocked resource failed:", e2.message);
@@ -325,7 +330,7 @@ async function handleProxyRequest(req: Request): Promise<Response> {
   } catch (e) {
     console.log("[proxyFetch] raw direct failed, trying gateway:", e.message);
     try {
-      resp = await fetchRawViaGateway(parsed.href, reqForGateway);
+      resp = await fetchRawViaGateway(parsed.href, reqForGateway, clientGatewayUrl);
     } catch (e2) {
       return new Response("Sub-resource could not be loaded: " + e2.message, { status: 502, headers: { "content-type": "text/plain", ...corsHeaders(proxyOrigin) } });
     }
@@ -527,8 +532,8 @@ function hookEl(cn,prop,fn){var c=window[cn];if(!c||!c.prototype)return;var d=Ob
 hookEl('HTMLImageElement','src',rr);hookEl('HTMLScriptElement','src',rr);hookEl('HTMLLinkElement','href',rr);hookEl('HTMLSourceElement','src',rr);hookEl('HTMLMediaElement','src',rr);hookEl('HTMLIFrameElement','src');
 try{var OL=Location.prototype;['assign','replace'].forEach(function(m){OL[m]=function(u){try{var abs=new URL(u,document.baseURI).href;navTo(abs)}catch(e){navTo(u)}}});var hd=Object.getOwnPropertyDescriptor(OL,'href');if(hd&&hd.get&&hd.set){Object.defineProperty(OL,'href',{configurable:true,enumerable:true,get:function(){return hd.get.call(this)},set:function(u){try{var abs=new URL(u,document.baseURI).href;navTo(abs)}catch(e){navTo(u)}}})}}catch(e){}
 try{var OP=history.pushState,OR=history.replaceState;history.pushState=function(s,t,u){try{if(u){var abs=new URL(u,document.baseURI).href;sendMsg({__vp:1,url:abs,soft:1})}}catch(e){}try{return OP.apply(this,arguments)}catch(e){}};history.replaceState=function(s,t,u){try{if(u){var abs=new URL(u,document.baseURI).href;sendMsg({__vp:1,url:abs,soft:1,replace:1})}}catch(e){}try{return OR.apply(this,arguments)}catch(e){}};window.addEventListener('popstate',function(){try{sendMsg({__vp:1,url:document.baseURI,soft:1,pop:1})}catch(e){}})}catch(e){}
-var oo=window.open;window.open=function(u){try{if(u){var abs=new URL(u,document.baseURI).href;navTo(abs);return null}}catch(e){}return oo?oo.apply(this,arguments):null};
-document.addEventListener('click',function(e){var t=e.target;var a=t&&t.closest&&t.closest('a[href]');if(!a)return;var h=a.getAttribute('href');if(!h||h.indexOf('javascript:')===0||h.charAt(0)==='#')return;e.preventDefault();try{var abs=new URL(h,document.baseURI).href;navTo(abs)}catch(err){navTo(h)}},true);
+var oo=window.open;window.open=function(u){try{if(u){var abs=new URL(u,document.baseURI).href;sendMsg({__vp:1,url:abs,newTab:1});return null}}catch(e){}return oo?oo.apply(this,arguments):null};
+document.addEventListener('click',function(e){var t=e.target;var a=t&&t.closest&&t.closest('a[href]');if(!a)return;var h=a.getAttribute('href');if(!h||h.indexOf('javascript:')===0||h.charAt(0)==='#')return;e.preventDefault();try{var abs=new URL(h,document.baseURI).href;if(e.ctrlKey||e.metaKey||e.button===1){sendMsg({__vp:1,url:abs,newTab:1})}else{navTo(abs)}}catch(err){navTo(h)}},true);
 document.addEventListener('submit',function(e){var f=e.target;if(!f||f.tagName!=='FORM')return;e.preventDefault();try{var act=f.getAttribute('action')||'';var abs=act?new URL(act,document.baseURI).href:document.baseURI;var method=(f.getAttribute('method')||'GET').toUpperCase();var fd=new FormData(f);if(method==='GET'){var q=new URLSearchParams(fd).toString();navTo(abs+(abs.indexOf('?')>=0?'&':'?')+q)}else{var pairs=[];fd.forEach(function(v,k){pairs.push([k,v==null?'':String(v)])});sendMsg({__vp:1,formSubmit:{url:abs,method:method,data:pairs}})}}catch(err){}},true);
 try{OR0.call(history,null,'',VP_PATH)}catch(e){}
 `;

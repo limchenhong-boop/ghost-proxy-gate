@@ -1,62 +1,107 @@
-# Base44 Project
+# Ghost Proxy — Managed Proxy Browser
 
-Use this repository to run and edit the app locally, then publish changes back through Base44.
+A browser-like web browsing tool where the **frontend is a browser shell only** and all actual page fetching is handled by a **separate backend service hosted on Render**. The backend routes outbound traffic through a residential proxy, rewrites pages for proxied navigation, and returns browser-safe content to the frontend.
 
-Any change pushed to the repo will also be reflected in the Base44 Builder.
+This is a **managed proxy browsing architecture**, not an unrestricted open proxy. Access is authenticated, the proxy is not exposed to end users, and all credentials live server-side.
 
-## Prerequisites
+## Architecture
 
-1. Clone the repository using the project's Git URL.
-2. Navigate to the project directory.
-3. Install dependencies: `npm install`.
-4. Install the Base44 CLI: `npm install -g base44@latest`.
-5. Install [Deno](https://docs.deno.com/runtime/getting_started/installation/) — the local Base44 backend runs on it.
-
-Run `base44 --help` (or see the [CLI reference](https://docs.base44.com/developers/references/cli/commands/introduction)) for the full command surface.
-
-## Run Locally
-
-Three commands, from the project root:
-
-```bash
-base44 login   # one-time per machine
-base44 link    # one-time per clone
-base44 dev     # local backend + frontend together
+```
+┌─────────────────────────────┐     ┌──────────────────────────────────┐
+│  Frontend (Base44 app)      │     │  Backend (Render)                 │
+│  Browser shell only         │     │  Proxy + page fetcher             │
+│                             │     │                                  │
+│  • Tabs, address bar, nav   │     │  • Accepts target URL            │
+│  • History, bookmarks       │────▶│  • Routes through residential    │
+│  • Settings panel           │     │    proxy (never exposed to FE)  │
+│  • Renders proxied HTML     │◀────│  • Fetches page + assets         │
+│  • Intercepts in-page nav   │     │  • Rewrites links/assets/CSS     │
+│    and sends back to backend│     │  • Handles redirects, cookies    │
+│                             │     │  • Returns rewritten HTML        │
+│  No direct page fetching    │     │  • SSRF protection, rate limiting │
+│  No proxy credentials in FE │     │  • All config in env vars        │
+└─────────────────────────────┘     └──────────────────────────────────┘
 ```
 
-Open the frontend URL that `base44 dev` prints (typically `http://localhost:5173`).
+**Frontend → Backend contract:**
+- Frontend sends `{ url: "https://example.com", origin: "https://your-app.base44.app" }`
+- Backend returns `{ ok: true, html: "<rewritten HTML>", finalUrl: "...", status: 200 }` or `{ ok: false, error: "..." }`
 
-Notes:
+The rewritten HTML includes a client interceptor that:
+- Rewrites all sub-resource URLs (images, CSS, JS, XHR) to go through the proxy
+- Intercepts link clicks, form submissions, and history changes
+- Posts navigation messages to the parent browser shell
+- Supports Ctrl/Cmd+click and middle-click to open links in new tabs
 
-- **Every fresh clone needs `base44 link`.** It writes `base44/.app.jsonc` (the app-id pointer), which is deliberately gitignored. Your app id is in the Builder URL (`app.base44.com/apps/<id>/...`); `base44 link --help` shows the non-interactive flags.
-- **`base44 dev` runs the frontend for you** (via `site.serveCommand` in this repo's `base44/config.jsonc`) — never run `npm run dev` yourself: alone it serves a UI with no backend behind it (`[base44] Proxy not enabled`, every `/api` call fails), and alongside `base44 dev` the second Vite silently takes the next port and you end up looking at the wrong one.
-- **The app must be published at least once for the UI to load under `base44 dev`.** The frontend boots by fetching app settings from the hosted app; before the first publish that fails and every page redirects to login. The local API works regardless.
-- Entities, functions, and auth run locally — entity data is **in-memory only**, wiped when `base44 dev` restarts. Everything else (Core integrations, OAuth login) is forwarded to your deployed app. Full breakdown: [Local development overview](https://docs.base44.com/developers/backend/overview/local-dev/local-development-overview).
+## Frontend Setup
 
-## Frontend Only, Hosted Backend
+The frontend is a Base44 app. No additional setup is needed beyond the Base44 platform.
 
-To work on just the frontend against your app's live hosted backend:
+### Frontend → Backend Communication
 
-```bash
-base44 dev --remote
-```
+The frontend calls the `proxyFetch` Base44 function (via `base44.functions.invoke`), which:
+1. Authenticates the user (only logged-in workspace members can use the proxy)
+2. Forwards the request to the Render-hosted gateway
+3. Returns rewritten HTML to the frontend
 
-⚠️ In this mode writes go to your app's **production data** — plain `base44 dev` keeps everything local.
+The frontend renders the HTML in a sandboxed `srcDoc` iframe. The client interceptor in the HTML posts navigation events back to the parent, which calls `proxyFetch` again for the next page.
 
-## Publish Your Changes
+### Settings Panel
 
-After pushing your changes to git, open the Base44 dashboard and publish the app:
+The browser has a settings panel (gear icon, top-right) where you can set the **Proxy Backend URL** — the URL of your Render-hosted gateway. This is stored in `localStorage` and passed to `proxyFetch` as `gatewayUrl`. If left empty, `proxyFetch` falls back to the `GATEWAY_URL` secret configured in the Base44 dashboard.
 
-```bash
-base44 dashboard open
-```
+## Backend Setup (Render)
 
-This repo syncs to Base44 through git, so publish from the dashboard rather than `base44 deploy` — a CLI deploy ships your local tree directly, bypassing the sync, and the deployed state silently diverges from the repo.
+The backend is a Node.js gateway server in the `gateway/` directory. It uses [Scramjet](https://github.com/MercuryWorkshop/scramjet) for interception and a residential proxy pool for outbound traffic.
 
-## Docs & Support
+### Deploy to Render
 
-GitHub integration: [https://docs.base44.com/developers/app-code/local-development/github](https://docs.base44.com/developers/app-code/local-development/github)
+1. Create a new **Web Service** on [Render](https://render.com)
+2. Connect this repository
+3. Configure:
+   - **Build Command:** `cd gateway && npm install`
+   - **Start Command:** `cd gateway && node server.js`
+   - **Node Version:** 20+
+4. Set environment variables (see below)
+5. Deploy
 
-Local development: [https://docs.base44.com/developers/backend/overview/local-dev/local-development-overview](https://docs.base44.com/developers/backend/overview/local-dev/local-development-overview)
+### Environment Variables (Render)
 
-Support: [https://app.base44.com/support](https://app.base44.com/support)
+| Variable | Required | Description |
+|---|---|---|
+| `RESIDENTIAL_PROXY` | Yes | Residential proxy URL(s), comma-separated. Format: `http://user:pass@host:port` |
+| `GATEWAY_API_KEY` | Yes | API key for gateway authentication. Must match the `GATEWAY_API_KEY` secret in the Base44 app. |
+| `PORT` | No | Listen port (default: 8080, Render sets this automatically) |
+| `WISP_DIAGNOSTICS` | No | Set to `0` to disable transport diagnostics (default: enabled) |
+
+### Base44 Secrets (Dashboard → Secrets)
+
+| Secret | Required | Description |
+|---|---|---|
+| `GATEWAY_URL` | Yes | Public URL of your Render gateway (e.g., `https://your-gateway.onrender.com`) |
+| `GATEWAY_API_KEY` | Yes | Must match the `GATEWAY_API_KEY` env var on Render |
+| `RESIDENTIAL_PROXY` | No | Can also be set here as a fallback (Render env var takes priority) |
+
+## Security
+
+- **Residential proxy credentials** are never exposed to the frontend. They live only in the Render environment.
+- **Gateway API key** is shared between the Render env var and the Base44 secret. The frontend never sees it — `proxyFetch` injects it server-side.
+- **SSRF protection** — the backend rejects requests to private IP ranges, localhost, and cloud metadata endpoints.
+- **Authentication** — only logged-in workspace members can use the proxy. The `proxyFetch` function validates the user on every request.
+- **No open proxy** — the gateway does not accept requests from unauthenticated sources. The API key is required on all endpoints.
+
+## Limitations
+
+- **WebSocket features** (real-time chat, live updates) are not supported through the proxy.
+- **Anti-bot protected sites** (Google, YouTube, TikTok) may require the residential proxy to be active and healthy.
+- **Login-required sites** may render as logged-out due to the stateless proxy environment.
+- **Sites with strict CSP** may not fully render even after CSP meta tags are stripped.
+- **X-Frame-Options / COOP / COEP** — the proxy rewrites content to be same-origin with the app, so these headers don't apply to the rewritten HTML.
+
+## Reference
+
+The proxy concept is inspired by [whistle](https://github.com/avwo/whistle) — a Node.js proxy and debugging tool. The backend uses [Scramjet](https://github.com/MercuryWorkshop/scramjet) for interception and a Wisp WebSocket transport for full SPA support.
+
+## Disclaimer
+
+This is a managed proxy browsing architecture. It is not an unrestricted open proxy. Access is authenticated, the residential proxy is used only by the backend, and all credentials are isolated server-side. The browser shell provides a familiar browsing experience while maintaining a safe architecture where actual page retrieval is isolated in a separate backend service.
