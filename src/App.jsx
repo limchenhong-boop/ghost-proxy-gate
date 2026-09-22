@@ -8,7 +8,6 @@ import UserNotRegisteredError from '@/components/UserNotRegisteredError';
 import ScrollToTop from './components/ScrollToTop';
 // Add page imports here
 import Home from '@/pages/Home';
-import ProxyTester from '@/pages/ProxyTester';
 import Browser from '@/pages/Browser';
 
 const AuthenticatedApp = () => {
@@ -39,7 +38,6 @@ const AuthenticatedApp = () => {
     <Routes>
       {/* Add your page Route elements here */}
       <Route path="/" element={<Home />} />
-      <Route path="/proxy-tester" element={<ProxyTester />} />
       <Route path="/browser" element={<Browser />} />
       <Route path="*" element={<PageNotFound />} />
     </Routes>
