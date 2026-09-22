@@ -117,12 +117,60 @@ function send(target, { method = "GET", headers, body, bodyTimeout, headersTimeo
   });
 }
 
+// Tracking / ad domains blocked on the generic //* proxy route (ported from
+// Space-proxy). Requests to these never leave the gateway.
+const TRACKING_DOMAINS = [
+  "trk.pinterest.com", "widgets.pinterest.com", "events.reddit.com", "events.redditmedia.com",
+  "ads.youtube.com", "ads-api.tiktok.com", "analytics.tiktok.com", "ads-sg.tiktok.com",
+  "business-api.tiktok.com", "ads.tiktok.com", "log.byteoversea.com", "ads.yahoo.com",
+  "analytics.yahoo.com", "geo.yahoo.com", "udc.yahoo.com", "udcm.yahoo.com", "advertising.yahoo.com",
+  "analytics.query.yahoo.com", "partnerads.ysm.yahoo.com", "log.fc.yahoo.com", "gemini.yahoo.com",
+  "extmaps-api.yandex.net", "analytics-sg.tiktok.com", "adtech.yahooinc.com", "adfstat.yandex.ru",
+  "appmetrica.yandex.ru", "metrika.yandex.ru", "advertising.yandex.ru", "offerwall.yandex.net",
+  "adfox.yandex.ru", "auction.unityads.unity3d.com", "webview.unityads.unity3d.com", "config.unityads.unity3d.com",
+  "bdapi-ads.realmemobile.com", "bdapi-in-ads.realmemobile.com", "api.ad.xiaomi.com", "data.mistat.xiaomi.com",
+  "data.mistat.india.xiaomi.com", "data.mistat.rus.xiaomi.com", "sdkconfig.ad.xiaomi.com", "sdkconfig.ad.intl.xiaomi.com",
+  "globalapi.ad.xiaomi.com", "tracking.rus.miui.com", "adsfs.oppomobile.com", "adx.ads.oppomobile.com",
+  "ck.ads.oppomobile.com", "data.ads.oppomobile.com", "metrics.data.hicloud.com", "metrics2.data.hicloud.com",
+  "grs.hicloud.com", "logservice.hicloud.com", "logservice1.hicloud.com", "logbak.hicloud.com",
+  "click.oneplus.cn", "open.oneplus.net", "samsungads.com", "smetrics.samsung.com",
+  "analytics-api.samsunghealthcn.com", "samsung-com.112.2o7.net", "nmetrics.samsung.com",
+  "advertising.apple.com", "tr.iadsdk.apple.com", "iadsdk.apple.com", "metrics.icloud.com",
+  "metrics.apple.com", "metrics.mzstatic.com", "api-adservices.apple.com", "books-analytics-events.apple.com",
+  "weather-analytics-events.apple.com", "notes-analytics-events.apple.com", "fwtracks.freshmarketer.com", "adtago.s3.amazonaws.com",
+  "analytics.s3.amazonaws.com", "advice-ads.s3.amazonaws.com", "advertising-api-eu.amazon.com", "pagead2.googlesyndication.com",
+  "adservice.google.com", "afs.googlesyndication.com", "mediavisor.doubleclick.net", "ads30.adcolony.com",
+  "adc3-launch.adcolony.com", "events3alt.adcolony.com", "wd.adcolony.com", "adservetx.media.net",
+  "analytics.google.com", "app-measurement.com", "click.googleanalytics.com", "identify.hotjar.com",
+  "events.hotjar.io", "o2.mouseflow.com", "gtm.mouseflow.com", "api.mouseflow.com", "realtime.luckyorange.com",
+  "upload.luckyorange.net", "cs.luckyorange.net", "an.facebook.com", "static.ads-twitter.com",
+  "adserver.unityads.unity3d.com", "iot-eu-logser.realme.com", "iot-logser.realme.com", "ads-api.twitter.com",
+  "adroll.com", "hotjar.com", "mixpanel.com", "adjust.com", "amazon-adsystem.com",
+  "kochava.com", "sentry.io", "cloudflareinsights.com", "appsflyer.com",
+  "ad.doubleclick.net", "google-analytics.com", "bluekai.com", "onelink.me",
+];
+
+// Headers stripped from //* proxy responses so proxied pages can embed and
+// scripts run without upstream CSP/X-Frame-Options blocking them.
+const STRIP_HEADERS = new Set([
+  "content-security-policy", "content-security-policy-report-only",
+  "x-frame-options", "x-content-type-options",
+  "cross-origin-embedder-policy", "cross-origin-opener-policy",
+  "cross-origin-resource-policy", "strict-transport-security",
+  "set-cookie", "server", "x-powered-by", "x-ua-compatible",
+  "x-forwarded-for", "x-real-ip", "referer", "user-agent",
+]);
+
+// Small in-memory GET cache for the //* route (bounded, LRU-ish).
+const routeCache = new Map();
+const ROUTE_CACHE_MAX = 200;
+
 export default async function residentialRoutes(fastify) {
   // Accept any request body on /raw as a Buffer (POST/PUT passthrough).
   fastify.addContentTypeParser("*", { parseAs: "buffer" }, (req, payload, done) => done(null, payload));
 
   fastify.addHook("onRequest", async (req, reply) => {
-    if (!req.url.startsWith("/fetch") && !req.url.startsWith("/raw") && !req.url.startsWith("/test-proxy")) return;
+    if (!req.url.startsWith("/fetch") && !req.url.startsWith("/raw") && !req.url.startsWith("/test-proxy") && !req.url.startsWith("//") && !req.url.startsWith("/return")) return;
     const expected = process.env.GATEWAY_API_KEY || "";
     if (!expected || req.headers["x-api-key"] !== expected) {
       reply.code(401).send({ ok: false, error: "Unauthorized" });
@@ -305,6 +353,96 @@ export default async function residentialRoutes(fastify) {
         proxy: redacted,
         targetError: err.message,
       });
+    }
+  });
+
+  // ---- Generic URL proxy: GET //<url> — fetches through the residential proxy,
+  //      strips anti-embed + tracking headers, blocks tracking domains, compresses
+  //      if the client supports it, and caches GET responses. (Ported from
+  //      Space-proxy's //* route, but routed through residential egress.)
+  fastify.get("//*", async (req, reply) => {
+    const target = req.params["*"];
+    if (!target || !isHttpUrl(target)) {
+      return reply.code(400).send({ ok: false, error: "A valid http(s) url is required." });
+    }
+    if (TRACKING_DOMAINS.some((d) => target.includes(d))) {
+      return reply.code(403).send("Blocked tracking domain");
+    }
+
+    const cacheKey = target;
+    const cached = routeCache.get(cacheKey);
+    if (cached) {
+      reply.headers(cached.headers);
+      reply.type(cached.type);
+      if (cached.encoding) reply.header("content-encoding", cached.encoding);
+      return reply.send(cached.body);
+    }
+
+    let res;
+    try {
+      res = await send(target, {
+        method: "GET",
+        headers: {
+          "user-agent": UA,
+          accept: "*/*",
+          "accept-language": "en-US,en;q=0.9",
+          "accept-encoding": "identity",
+        },
+        headersTimeout: 20000,
+        bodyTimeout: 25000,
+      });
+    } catch (err) {
+      return reply.code(502).send({ ok: false, error: "Residential fetch failed: " + err.message });
+    }
+
+    const responseHeaders = {};
+    for (const [key, value] of Object.entries(res.headers)) {
+      if (!STRIP_HEADERS.has(key.toLowerCase())) {
+        reply.header(key, value);
+        responseHeaders[key] = value;
+      }
+    }
+    const typeHeader = res.headers["content-type"] || "application/octet-stream";
+    reply.type(typeHeader);
+
+    let body = Buffer.from(await res.body.arrayBuffer());
+    const acceptEncoding = req.headers["accept-encoding"] || "";
+    let encoding = null;
+    if (acceptEncoding.includes("br")) {
+      const zlib = await import("node:zlib");
+      body = zlib.brotliCompressSync(body);
+      encoding = "br";
+    } else if (acceptEncoding.includes("gzip")) {
+      const zlib = await import("node:zlib");
+      body = zlib.gzipSync(body);
+      encoding = "gzip";
+    }
+    if (encoding) {
+      reply.header("content-encoding", encoding);
+      responseHeaders["content-encoding"] = encoding;
+    }
+
+    routeCache.set(cacheKey, { headers: responseHeaders, type: typeHeader, body, encoding });
+    if (routeCache.size > ROUTE_CACHE_MAX) routeCache.delete(routeCache.keys().next().value);
+    return reply.send(body);
+  });
+
+  // ---- DuckDuckGo autocomplete: GET /return?q=... (ported from Space-proxy,
+  //      egressed through the residential proxy so the gateway IP stays hidden)
+  fastify.get("/return", async (req, reply) => {
+    const q = req.query?.q;
+    if (!q) return reply.code(400).send({ error: "query parameter?" });
+    try {
+      const res = await send(`https://duckduckgo.com/ac/?q=${encodeURIComponent(q)}`, {
+        method: "GET",
+        headers: { "user-agent": UA, accept: "application/json" },
+        headersTimeout: 10000,
+        bodyTimeout: 10000,
+      });
+      reply.header("access-control-allow-origin", "*");
+      return reply.send(await res.body.json());
+    } catch (err) {
+      return reply.code(502).send({ error: "request failed: " + err.message });
     }
   });
 }
