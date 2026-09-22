@@ -37,9 +37,6 @@ import transportLogs from "./transport-logs.js";
 import { scramjetPath } from "@mercuryworkshop/scramjet/path";
 import { libcurlPath } from "@mercuryworkshop/libcurl-transport";
 import { baremuxPath } from "@mercuryworkshop/bare-mux/node";
-import { epoxyPath } from "@mercuryworkshop/epoxy-transport";
-import { bareModulePath } from "@mercuryworkshop/bare-as-module3";
-import { uvPath } from "@titaniumnetwork-dev/ultraviolet";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const publicPath = join(__dirname, "public");
@@ -139,27 +136,6 @@ fastify.register(fastifyStatic, {
 fastify.register(fastifyStatic, {
   root: baremuxPath,
   prefix: "/baremux/",
-  decorateReply: false,
-});
-
-// Serve the epoxy transport at /epoxy/ (ported from Space-proxy)
-fastify.register(fastifyStatic, {
-  root: epoxyPath,
-  prefix: "/epoxy/",
-  decorateReply: false,
-});
-
-// Serve bare-as-module3 at /baremod/ (alternative bare transport)
-fastify.register(fastifyStatic, {
-  root: bareModulePath,
-  prefix: "/baremod/",
-  decorateReply: false,
-});
-
-// Serve Ultraviolet at /_uv/ (alternative proxy backend assets)
-fastify.register(fastifyStatic, {
-  root: uvPath,
-  prefix: "/_uv/",
   decorateReply: false,
 });
 

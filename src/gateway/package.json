@@ -16,6 +16,6 @@
     "@mercuryworkshop/wisp-js": "0.4.1",
     "fastify": "^5.7.4",
     "@fastify/static": "^9.0.0",
-    "ws": "^8.18.3"
+    "undici": "^6.21.0"
   }
 }
